@@ -9,7 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    database_url: str = "postgresql+asyncpg://paas:paas@localhost:5432/paas"
+    database_url: str = "postgresql+asyncpg://paas:paas@127.0.0.1:5433/paas"
     jwt_secret: str = Field(default="change-me-in-production", min_length=16)
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 1440
@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     docker_host_port_end: int = 30000
     docker_read_only_default: bool = False
     docker_auto_restart_unhealthy: bool = False
+    docker_container_start_grace_seconds: float = 2.0
     docker_build_network: str = "bridge"
     dockerfile_max_bytes: int = 64_000
     docker_context_max_bytes: int = 10_000_000

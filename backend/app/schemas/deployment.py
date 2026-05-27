@@ -96,3 +96,11 @@ class FileReadResponse(BaseModel):
 class FileWriteRequest(BaseModel):
     path: str = Field(min_length=1, max_length=512)
     content: str = Field(max_length=1_000_000)
+
+
+class InstanceLogResponse(BaseModel):
+    deployment_id: int
+    instance_index: int
+    container_id: str
+    assigned_port: int | None
+    logs: str

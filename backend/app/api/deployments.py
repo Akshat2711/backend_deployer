@@ -4,6 +4,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import RedirectResponse
+import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,13 +21,33 @@ from app.schemas.deployment import (
     FileListResponse,
     FileReadResponse,
     FileWriteRequest,
+    InstanceLogResponse,
     ResourcePoolResponse,
 )
-from app.schemas.stats import InstanceStatsResponse, StatsResponse
+from app.schemas.stats import DailyDeploymentStatsResponse, InstanceStatsResponse, StatsResponse
 from app.services.docker_manager import DockerManagerError
 from app.utils.container_paths import safe_workspace_path
 
 router = APIRouter(tags=["deployments"])
+logger = structlog.get_logger()
+
+
+def deployment_containers(deployment: Deployment) -> list[tuple[int, str, int | None]]:
+    container_ids = [cid for cid in (deployment.container_ids or ([deployment.container_id] if deployment.container_id else [])) if cid]
+    assigned_ports = [int(port) for port in (deployment.assigned_ports or ([deployment.assigned_port] if deployment.assigned_port else [])) if port]
+    return [
+        (index + 1, container_id, assigned_ports[index] if index < len(assigned_ports) else None)
+        for index, container_id in enumerate(container_ids)
+    ]
+
+
+def select_deployment_container(deployment: Deployment, instance_index: int) -> tuple[int, str, int | None]:
+    containers = deployment_containers(deployment)
+    if not containers:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment has no containers")
+    if instance_index < 1 or instance_index > len(containers):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Instance not found")
+    return containers[instance_index - 1]
 
 
 @router.post("/deploy", response_model=DeploymentResponse, status_code=status.HTTP_201_CREATED)
@@ -170,6 +191,10 @@ async def route_deployment_traffic(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    try:
+        await request.app.state.deployment_service.record_route_request(db, deployment_id=deployment.id)
+    except Exception as exc:
+        logger.warning("deployment_route_request_count_failed", deployment_id=deployment.id, error=str(exc))
 
     host = request.url.hostname or "localhost"
     target_path = f"/{path.lstrip('/')}" if path else "/"
@@ -180,22 +205,67 @@ async def route_deployment_traffic(
     )
 
 
+@router.get("/deployment/{deployment_id}/daily-stats", response_model=list[DailyDeploymentStatsResponse])
+async def get_daily_stats(
+    deployment_id: int,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, int | str]]:
+    deployment = await request.app.state.deployment_service.get_owned_deployment(db, user_id=current_user.id, deployment_id=deployment_id)
+    if deployment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment not found")
+    return await request.app.state.deployment_service.deployment_daily_stats(db, deployment_id=deployment.id, days=5)
+
+
 @router.get("/deployment/{deployment_id}/logs")
 async def get_logs(
     deployment_id: int,
     request: Request,
     tail: int = Query(default=200, ge=1, le=5000),
+    instance_index: int = Query(default=1, ge=1),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
     deployment = await request.app.state.deployment_service.get_owned_deployment(db, user_id=current_user.id, deployment_id=deployment_id)
-    if deployment is None or not deployment.container_id:
+    if deployment is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment not found")
+    _, container_id, _ = select_deployment_container(deployment, instance_index)
     try:
-        logs = await request.app.state.docker_manager.get_logs(deployment.container_id, tail=tail)
+        logs = await request.app.state.docker_manager.get_logs(container_id, tail=tail)
     except DockerManagerError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     return {"logs": logs}
+
+
+@router.get("/deployment/{deployment_id}/instances/logs", response_model=list[InstanceLogResponse])
+async def get_instance_logs(
+    deployment_id: int,
+    request: Request,
+    tail: int = Query(default=200, ge=1, le=5000),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[InstanceLogResponse]:
+    deployment = await request.app.state.deployment_service.get_owned_deployment(db, user_id=current_user.id, deployment_id=deployment_id)
+    if deployment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment not found")
+
+    rows: list[InstanceLogResponse] = []
+    for instance_index, container_id, assigned_port in deployment_containers(deployment):
+        try:
+            logs = await request.app.state.docker_manager.get_logs(container_id, tail=tail)
+        except DockerManagerError as exc:
+            logs = str(exc)
+        rows.append(
+            InstanceLogResponse(
+                deployment_id=deployment.id,
+                instance_index=instance_index,
+                container_id=container_id,
+                assigned_port=assigned_port,
+                logs=logs,
+            )
+        )
+    return rows
 
 
 @router.get("/deployment/{deployment_id}/stats", response_model=StatsResponse)
@@ -274,15 +344,17 @@ async def list_container_files(
     deployment_id: int,
     request: Request,
     path: str = Query(default=None),
+    instance_index: int = Query(default=1, ge=1),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, object]:
     deployment = await request.app.state.deployment_service.get_owned_deployment(db, user_id=current_user.id, deployment_id=deployment_id)
-    if deployment is None or not deployment.container_id:
+    if deployment is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment not found")
+    _, container_id, _ = select_deployment_container(deployment, instance_index)
     safe_path = safe_workspace_path(path, workspace_root=settings.container_workspace_root)
     try:
-        entries = await request.app.state.docker_manager.list_files(deployment.container_id, path=safe_path)
+        entries = await request.app.state.docker_manager.list_files(container_id, path=safe_path)
     except DockerManagerError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     return {"path": safe_path, "entries": entries}
@@ -293,15 +365,17 @@ async def read_container_file(
     deployment_id: int,
     request: Request,
     path: str = Query(..., min_length=1, max_length=512),
+    instance_index: int = Query(default=1, ge=1),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
     deployment = await request.app.state.deployment_service.get_owned_deployment(db, user_id=current_user.id, deployment_id=deployment_id)
-    if deployment is None or not deployment.container_id:
+    if deployment is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment not found")
+    _, container_id, _ = select_deployment_container(deployment, instance_index)
     safe_path = safe_workspace_path(path, workspace_root=settings.container_workspace_root)
     try:
-        content = await request.app.state.docker_manager.read_file(deployment.container_id, path=safe_path)
+        content = await request.app.state.docker_manager.read_file(container_id, path=safe_path)
     except DockerManagerError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     return {"path": safe_path, "content": content}
@@ -316,11 +390,15 @@ async def write_container_file(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
     deployment = await request.app.state.deployment_service.get_owned_deployment(db, user_id=current_user.id, deployment_id=deployment_id)
-    if deployment is None or not deployment.container_id:
+    if deployment is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment not found")
     safe_path = safe_workspace_path(payload.path, workspace_root=settings.container_workspace_root)
+    containers = deployment_containers(deployment)
+    if not containers:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment has no containers")
     try:
-        await request.app.state.docker_manager.write_file(deployment.container_id, path=safe_path, content=payload.content.encode("utf-8"))
+        for _, container_id, _ in containers:
+            await request.app.state.docker_manager.write_file(container_id, path=safe_path, content=payload.content.encode("utf-8"))
     except DockerManagerError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     return {"path": safe_path, "content": payload.content}
@@ -336,14 +414,18 @@ async def upload_container_file(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
     deployment = await request.app.state.deployment_service.get_owned_deployment(db, user_id=current_user.id, deployment_id=deployment_id)
-    if deployment is None or not deployment.container_id:
+    if deployment is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment not found")
     safe_path = safe_workspace_path(path, workspace_root=settings.container_workspace_root)
     content = await file.read(settings.container_file_max_bytes + 1)
     if len(content) > settings.container_file_max_bytes:
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File exceeds upload size limit")
+    containers = deployment_containers(deployment)
+    if not containers:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment has no containers")
     try:
-        await request.app.state.docker_manager.write_file(deployment.container_id, path=safe_path, content=content)
+        for _, container_id, _ in containers:
+            await request.app.state.docker_manager.write_file(container_id, path=safe_path, content=content)
     except DockerManagerError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     return {"path": safe_path, "content": content.decode("utf-8", errors="replace")}

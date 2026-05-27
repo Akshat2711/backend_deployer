@@ -1,4 +1,17 @@
-const SKIPPED_CONTEXT_DIRS = new Set([".git", "node_modules", ".next", "__pycache__", ".venv", "venv"]);
+const DEFAULT_SKIPPED_CONTEXT_DIRS = new Set([".git", "node_modules", ".next", "__pycache__", ".venv", "venv"]);
+
+export type BuildContextPreview = {
+  dockerignoreFound: boolean;
+  includedFiles: string[];
+  ignoredFiles: string[];
+  totalFiles: number;
+  includedBytes: number;
+};
+
+export type BuildContextOverrides = {
+  includePaths?: Iterable<string>;
+  excludePaths?: Iterable<string>;
+};
 
 export function findDockerfile(files: File[]) {
   return files.find((file) => {
@@ -7,11 +20,9 @@ export function findDockerfile(files: File[]) {
   }) ?? null;
 }
 
-export function buildTarContext(files: File[]) {
+export async function buildTarContext(files: File[], overrides: BuildContextOverrides = {}) {
+  const selectedFiles = await selectContextFiles(files, overrides);
   const chunks: BlobPart[] = [];
-  const selectedFiles = files
-    .map((file) => ({ file, path: normalizeContextPath(getRelativeFilePath(file)) }))
-    .filter(({ path }) => path && !shouldSkipContextPath(path));
 
   for (const { file, path } of selectedFiles) {
     chunks.push(tarHeader(path, file.size));
@@ -21,6 +32,108 @@ export function buildTarContext(files: File[]) {
 
   chunks.push(new Uint8Array(1024));
   return new Blob(chunks, { type: "application/x-tar" });
+}
+
+export async function getBuildContextPreview(files: File[], overrides: BuildContextOverrides = {}): Promise<BuildContextPreview> {
+  const entries = files
+    .map((file) => ({ file, path: normalizeContextPath(getRelativeFilePath(file)) }))
+    .filter(({ path }) => Boolean(path));
+  const matcher = await dockerignoreMatcher(entries);
+  const includePaths = new Set(overrides.includePaths ?? []);
+  const excludePaths = new Set(overrides.excludePaths ?? []);
+  const includedFiles: string[] = [];
+  const ignoredFiles: string[] = [];
+  let includedBytes = 0;
+
+  for (const entry of entries) {
+    const ignored = excludePaths.has(entry.path) || (!includePaths.has(entry.path) && matcher(entry.path));
+    if (ignored) {
+      ignoredFiles.push(entry.path);
+    } else {
+      includedFiles.push(entry.path);
+      includedBytes += entry.file.size;
+    }
+  }
+
+  includedFiles.sort();
+  ignoredFiles.sort();
+
+  return {
+    dockerignoreFound: matcher.dockerignoreFound,
+    includedFiles,
+    ignoredFiles,
+    totalFiles: entries.length,
+    includedBytes,
+  };
+}
+
+async function selectContextFiles(files: File[], overrides: BuildContextOverrides) {
+  const entries = files
+    .map((file) => ({ file, path: normalizeContextPath(getRelativeFilePath(file)) }))
+    .filter(({ path }) => Boolean(path));
+  const matcher = await dockerignoreMatcher(entries);
+  const includePaths = new Set(overrides.includePaths ?? []);
+  const excludePaths = new Set(overrides.excludePaths ?? []);
+  return entries.filter(({ path }) => !excludePaths.has(path) && (includePaths.has(path) || !matcher(path)));
+}
+
+type DockerignoreMatcher = ((path: string) => boolean) & { dockerignoreFound: boolean };
+
+async function dockerignoreMatcher(entries: Array<{ file: File; path: string }>): Promise<DockerignoreMatcher> {
+  const dockerignore = entries.find(({ path }) => path === ".dockerignore");
+  if (!dockerignore) {
+    const matcher = ((path: string) => shouldSkipDefaultContextPath(path)) as DockerignoreMatcher;
+    matcher.dockerignoreFound = false;
+    return matcher;
+  }
+
+  const rules = parseDockerignore(await dockerignore.file.text());
+  const matcher = ((path: string) => {
+    let ignored = false;
+    for (const rule of rules) {
+      if (matchesDockerignoreRule(path, rule.pattern)) {
+        ignored = !rule.negated;
+      }
+    }
+    return ignored;
+  }) as DockerignoreMatcher;
+  matcher.dockerignoreFound = true;
+  return matcher;
+}
+
+function parseDockerignore(content: string) {
+  return content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#") && line !== ".")
+    .map((line) => {
+      const negated = line.startsWith("!");
+      const rawPattern = negated ? line.slice(1) : line;
+      return { negated, pattern: rawPattern.replaceAll("\\", "/") };
+    })
+    .filter(({ pattern }) => Boolean(pattern));
+}
+
+function matchesDockerignoreRule(path: string, rawPattern: string) {
+  const directoryPattern = rawPattern.endsWith("/");
+  const anchored = rawPattern.startsWith("/");
+  const pattern = rawPattern.replace(/^\/+/, "").replace(/\/+$/, "");
+  if (!pattern) return false;
+
+  if (!pattern.includes("/")) {
+    return path.split("/").some((part, index, parts) => {
+      const isLast = index === parts.length - 1;
+      return wildcardMatch(part, pattern) || (directoryPattern && !isLast && wildcardMatch(part, pattern));
+    });
+  }
+
+  const candidates = anchored ? [path] : pathSegments(path);
+  return candidates.some((candidate) => wildcardMatch(candidate, pattern) || candidate.startsWith(`${pattern}/`));
+}
+
+function pathSegments(path: string) {
+  const parts = path.split("/");
+  return parts.map((_, index) => parts.slice(index).join("/"));
 }
 
 function getRelativeFilePath(file: File) {
@@ -36,8 +149,14 @@ function normalizeContextPath(path: string) {
   return parts.join("/");
 }
 
-function shouldSkipContextPath(path: string) {
-  return path.split("/").some((part) => SKIPPED_CONTEXT_DIRS.has(part));
+function shouldSkipDefaultContextPath(path: string) {
+  return path.split("/").some((part) => DEFAULT_SKIPPED_CONTEXT_DIRS.has(part));
+}
+
+function wildcardMatch(value: string, pattern: string) {
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  const regex = escaped.replace(/\*\*/g, "\0").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replaceAll("\0", ".*");
+  return new RegExp(`^${regex}$`).test(value);
 }
 
 function tarHeader(name: string, size: number) {

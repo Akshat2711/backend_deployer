@@ -54,15 +54,15 @@ export function AuthPage() {
           <div className="max-w-2xl">
             {/* Expanded Hero Logo Section */}
             <div className="mb-8 flex flex-col items-start gap-5 sm:flex-row sm:items-center">
-              <div className="relative rounded-2xl border border-zinc-200 bg-white p-3 shadow-sm shadow-zinc-100 dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-none">
-                <div className="absolute inset-0 animate-pulse rounded-2xl bg-cyan-500/5 opacity-50 blur-sm" />
+              <div className="relative rounded-2xl   p-3 shadow-sm shadow-zinc-100 ">
+                <div className="absolute inset-0 animate-pulse rounded-2xl blur-sm" />
                 <Image
                   src="/assets/logo.gif"
                   alt="CloudTurtle Logo"
-                  width={120}
-                  height={120}
+                  width={240}
+                  height={240}
                   priority
-                  className="relative z-10 object-contain mix-blend-multiply dark:mix-blend-screen"
+                  className="relative z-10 object-contain"
                 />
               </div>
               <div>
@@ -72,8 +72,8 @@ export function AuthPage() {
                     CloudTurtle Infrastructure v2.4
                   </p>
                 </div>
-                <h2 className="mt-1 font-mono text-lg font-bold text-orange-500 dark:text-orange-400">
-                  cloudturtle connect --secure
+                <h2 className="mt-1 font-mono text-6xl font-bold text-orange-500 dark:text-orange-400">
+                  cloudturtle connect
                 </h2>
               </div>
             </div>
@@ -108,7 +108,7 @@ export function AuthPage() {
           </div>
 
           {/* Right Form Column */}
-          <form onSubmit={handleAuth} className="terminal-window border border-zinc-200 bg-white p-8 shadow-xl dark:border-zinc-800 dark:bg-zinc-900/50 rounded-xl">
+          <form onSubmit={handleAuth} className="terminal-window border border-zinc-200 bg-white p-8 shadow-xl dark:!border-orange-400 dark:bg-zinc-900/50 rounded-xl">
             <div className="mb-6 flex rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800">
               {(["login", "signup"] as const).map((item) => (
                 <button

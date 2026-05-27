@@ -49,16 +49,55 @@ export function DetailMetric({ label, value }: { label: string; value: string | 
   );
 }
 
-export function LogPanel({ title, label, content, accent = false }: { title: string; label: string; content: string; accent?: boolean }) {
+export function LogPanel({
+  title,
+  label,
+  content,
+  accent = false,
+}: {
+  title: string;
+  label: string;
+  content: string;
+  accent?: boolean;
+}) {
   return (
-    <div>
-      <div className="mb-2 flex items-center justify-between">
-        <h3 className="terminal-title text-sm font-semibold uppercase">{title}</h3>
-        <span className="text-xs uppercase text-zinc-500">[{label}]</span>
+    <div className="flex flex-col gap-2.5">
+      {/* Panel Metadata Header */}
+      <div className="flex items-center justify-between px-1">
+        <h3 className="text-[11px] font-bold uppercase tracking-wider text-zinc-400">
+          {title}
+        </h3>
+        
+        <div className="flex items-center gap-1.5">
+          {/* Real-time status pulse beacon light */}
+          <span className={`h-1.5 w-1.5 rounded-full ${accent ? "bg-cyan-400 animate-pulse" : "bg-zinc-600"}`} />
+          <span className="font-mono text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+            {label}
+          </span>
+        </div>
       </div>
-      <pre className={`h-72 min-w-0 overflow-auto  p-4 font-mono text-xs leading-5 ${accent ? "text-cyan-50" : "text-zinc-100"}`}>
-        {content}
-      </pre>
+
+      {/* Terminal Sandbox Viewport */}
+      <div
+        className={`relative rounded-xl border font-mono transition-all duration-300 ${
+          accent
+            ? "border-cyan-500/30 bg-cyan-950/20 shadow-[inset_0_1px_1px_rgba(255,255,255,0.05),0_0_20px_rgba(34,211,238,0.05)]"
+            : "border-zinc-800 bg-zinc-950/60 shadow-[inset_0_1px_1px_rgba(255,255,255,0.03)]"
+        }`}
+      >
+        {/* Output Canvas Area */}
+        <pre
+          className={`h-80 min-w-0 overflow-y-auto overflow-x-auto p-4 text-xs font-medium leading-6 whitespace-pre-wrap break-all select-text transition-colors duration-300
+            [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden ${
+            accent ? "text-cyan-300 selection:bg-cyan-500/30" : "text-zinc-300 selection:bg-zinc-800"
+          }`}
+        >
+          {content}
+        </pre>
+
+        {/* Subtle Bottom Ambient Fade Graphic Overlay */}
+        <div className="absolute inset-x-0 bottom-0 h-8 pointer-events-none rounded-b-xl bg-gradient-to-t from-zinc-950/40 to-transparent" />
+      </div>
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import { apiBase } from "./config";
 import { responseError } from "./errors";
-import type { Deployment, DeploymentAction, ExecResult, FileList, FileRead, InstanceStats, ResourcePool, Stats, User } from "./types";
+import type { DailyDeploymentStats, Deployment, DeploymentAction, ExecResult, FileList, FileRead, InstanceLogs, InstanceStats, ResourcePool, Stats, User } from "./types";
 
 type AuthResponse = {
   access_token: string;
@@ -79,8 +79,16 @@ export function getDeploymentInstanceStats(token: string, id: number) {
   return jsonRequest<InstanceStats[]>(`/deployment/${id}/instances/stats`, token);
 }
 
-export function getDeploymentLogs(token: string, id: number, tail = 300) {
-  return jsonRequest<{ logs: string }>(`/deployment/${id}/logs?tail=${tail}`, token);
+export function getDeploymentDailyStats(token: string, id: number) {
+  return jsonRequest<DailyDeploymentStats[]>(`/deployment/${id}/daily-stats`, token);
+}
+
+export function getDeploymentLogs(token: string, id: number, tail = 300, instanceIndex = 1) {
+  return jsonRequest<{ logs: string }>(`/deployment/${id}/logs?tail=${tail}&instance_index=${instanceIndex}`, token);
+}
+
+export function getDeploymentInstanceLogs(token: string, id: number, tail = 300) {
+  return jsonRequest<InstanceLogs[]>(`/deployment/${id}/instances/logs?tail=${tail}`, token);
 }
 
 export function execInDeployment(token: string, id: number, command: string, workdir?: string) {
@@ -90,12 +98,12 @@ export function execInDeployment(token: string, id: number, command: string, wor
   });
 }
 
-export function listContainerFiles(token: string, id: number, path = "/app") {
-  return jsonRequest<FileList>(`/deployment/${id}/files?path=${encodeURIComponent(path)}`, token);
+export function listContainerFiles(token: string, id: number, path = "/app", instanceIndex = 1) {
+  return jsonRequest<FileList>(`/deployment/${id}/files?path=${encodeURIComponent(path)}&instance_index=${instanceIndex}`, token);
 }
 
-export function readContainerFile(token: string, id: number, path: string) {
-  return jsonRequest<FileRead>(`/deployment/${id}/file?path=${encodeURIComponent(path)}`, token);
+export function readContainerFile(token: string, id: number, path: string, instanceIndex = 1) {
+  return jsonRequest<FileRead>(`/deployment/${id}/file?path=${encodeURIComponent(path)}&instance_index=${instanceIndex}`, token);
 }
 
 export function writeContainerFile(token: string, id: number, path: string, content: string) {
@@ -138,10 +146,10 @@ export function loadBalancedDeploymentUrl(id: number, path = "") {
   return routeUrl.toString();
 }
 
-export function logsWebSocketUrl(token: string, id: number) {
+export function logsWebSocketUrl(token: string, id: number, instanceIndex = 1) {
   const wsUrl = new URL(apiBase);
   wsUrl.protocol = wsUrl.protocol === "https:" ? "wss:" : "ws:";
   wsUrl.pathname = `/ws/logs/${id}`;
-  wsUrl.search = new URLSearchParams({ token }).toString();
+  wsUrl.search = new URLSearchParams({ token, instance_index: String(instanceIndex) }).toString();
   return wsUrl;
 }

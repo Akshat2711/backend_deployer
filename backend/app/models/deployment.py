@@ -34,3 +34,4 @@ class Deployment(Base):
 
     user = relationship("User", back_populates="deployments")
     usage_stats = relationship("UsageStats", back_populates="deployment", cascade="all, delete-orphan")
+    daily_stats = relationship("DeploymentDailyStat", back_populates="deployment", cascade="all, delete-orphan")

@@ -30,6 +30,7 @@ async def monitor_deployments(service: DeploymentService, stop_event: asyncio.Ev
                             await db.commit()
                         if stats and stats.running:
                             await service.autoscale_if_needed(db, deployment, stats)
+                        await service.refresh_instance_health(db, deployment)
                     except DockerManagerError as exc:
                         deployment.status = "crashed"
                         deployment.last_error = str(exc)

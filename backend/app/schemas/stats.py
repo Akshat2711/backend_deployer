@@ -20,3 +20,10 @@ class InstanceStatsResponse(StatsResponse):
     instance_index: int
     container_id: str
     assigned_port: int
+
+
+class DailyDeploymentStatsResponse(BaseModel):
+    day: str
+    request_count: int
+    avg_ram_usage_bytes: int
+    max_ram_usage_bytes: int

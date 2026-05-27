@@ -7,7 +7,9 @@ import {
   createDeployment,
   createDockerfileDeployment,
   deleteDeployment,
+  getDeploymentDailyStats,
   execInDeployment,
+  getDeploymentInstanceLogs,
   getDeploymentInstanceStats,
   getDeploymentLogs,
   getDeploymentStats,
@@ -21,10 +23,10 @@ import {
   uploadContainerFile,
   writeContainerFile,
 } from "@/lib/api";
-import { buildTarContext, findDockerfile } from "@/lib/build-context";
+import { buildTarContext, findDockerfile, getBuildContextPreview, type BuildContextPreview } from "@/lib/build-context";
 import { tokenStorageKey } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
-import type { Deployment, DeploymentAction, DeployFormState, FileEntry, InstanceStats, ResourcePool, Stats, User } from "@/lib/types";
+import type { DailyDeploymentStats, Deployment, DeploymentAction, DeployFormState, FileEntry, InstanceStats, ResourcePool, Stats, User } from "@/lib/types";
 import { FleetMetric, PoolBar } from "./ui";
 import DashboardSection from "./DashboardSection";
 
@@ -43,6 +45,25 @@ const initialDeployForm: DeployFormState = {
   read_only: "default",
 };
 
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB"];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+async function exposedPortFromDockerfile(file: File | null) {
+  if (!file) return null;
+  const dockerfile = await file.text();
+  const match = dockerfile.match(/^\s*EXPOSE\s+(\d+)(?:\/tcp)?(?:\s|$)/im);
+  return match ? match[1] : null;
+}
+
 export default function DashboardRoute() {
   const router = useRouter();
   const [token, setToken] = useState<string | null>(null);
@@ -52,8 +73,10 @@ export default function DashboardRoute() {
   const [resourcePool, setResourcePool] = useState<ResourcePool | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [instanceStats, setInstanceStats] = useState<InstanceStats[]>([]);
+  const [dailyStats, setDailyStats] = useState<DailyDeploymentStats[]>([]);
   const [logs, setLogs] = useState("");
   const [liveLogs, setLiveLogs] = useState<string[]>([]);
+  const [logTarget, setLogTarget] = useState("all");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [actionId, setActionId] = useState<number | null>(null);
@@ -61,6 +84,10 @@ export default function DashboardRoute() {
   const [deployForm, setDeployForm] = useState<DeployFormState>(initialDeployForm);
   const [dockerfile, setDockerfile] = useState<File | null>(null);
   const [codeDirFiles, setCodeDirFiles] = useState<File[]>([]);
+  const [extraContextFiles, setExtraContextFiles] = useState<File[]>([]);
+  const [contextIncludedPaths, setContextIncludedPaths] = useState<Set<string>>(new Set());
+  const [contextExcludedPaths, setContextExcludedPaths] = useState<Set<string>>(new Set());
+  const [contextPreview, setContextPreview] = useState<BuildContextPreview | null>(null);
   
   // Drawer Panel Toggle State
   const [isPanelOpen, setIsPanelOpen] = useState(false);
@@ -82,6 +109,33 @@ export default function DashboardRoute() {
     [deployments, selectedId],
   );
 
+  const contextFiles = useMemo(() => [...codeDirFiles, ...extraContextFiles], [codeDirFiles, extraContextFiles]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (deployForm.source !== "dockerfile" || contextFiles.length === 0) {
+      return;
+    }
+
+    getBuildContextPreview(contextFiles, {
+      includePaths: contextIncludedPaths,
+      excludePaths: contextExcludedPaths,
+    })
+      .then((preview) => {
+        if (!cancelled) setContextPreview(preview);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setContextPreview(null);
+          setMessage(getErrorMessage(error));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [contextExcludedPaths, contextFiles, contextIncludedPaths, deployForm.source]);
+
   async function refreshDeployments(activeToken = token) {
     if (!activeToken) return;
     const rows = await listDeployments(activeToken);
@@ -96,18 +150,80 @@ export default function DashboardRoute() {
 
   async function refreshStats(id = selectedDeployment?.id) {
     if (!token || !id) return;
-    const [primaryStats, allInstanceStats] = await Promise.all([
+    const [primaryStats, allInstanceStats, dailyRows] = await Promise.all([
       getDeploymentStats(token, id),
       getDeploymentInstanceStats(token, id),
+      getDeploymentDailyStats(token, id),
     ]);
     setStats(primaryStats);
     setInstanceStats(allInstanceStats);
+    setDailyStats(dailyRows);
+  }
+
+  async function refreshDailyStats(id = selectedDeployment?.id) {
+    if (!token || !id) return;
+    setDailyStats(await getDeploymentDailyStats(token, id));
   }
 
   async function fetchLogs(id = selectedDeployment?.id) {
     if (!token || !id) return;
-    const response = await getDeploymentLogs(token, id);
+    if (logTarget === "all") {
+      const rows = await getDeploymentInstanceLogs(token, id);
+      setLogs(
+        rows
+          .map((row) => {
+            const port = row.assigned_port ? `:${row.assigned_port}` : "no port";
+            return `===== Instance ${row.instance_index} (${port}) ${row.container_id.slice(0, 12)} =====\n${row.logs || "(no logs)"}`;
+          })
+          .join("\n\n"),
+      );
+      return;
+    }
+
+    const response = await getDeploymentLogs(token, id, 300, Number(logTarget));
     setLogs(response.logs);
+  }
+
+  function resetContextOverrides() {
+    setContextIncludedPaths(new Set());
+    setContextExcludedPaths(new Set());
+  }
+
+  function includeContextPath(path: string) {
+    setContextIncludedPaths((current) => new Set(current).add(path));
+    setContextExcludedPaths((current) => {
+      const next = new Set(current);
+      next.delete(path);
+      return next;
+    });
+  }
+
+  function excludeContextPath(path: string) {
+    setContextExcludedPaths((current) => new Set(current).add(path));
+    setContextIncludedPaths((current) => {
+      const next = new Set(current);
+      next.delete(path);
+      return next;
+    });
+  }
+
+  async function selectCodeDirectory(files: File[]) {
+    setContextPreview(null);
+    resetContextOverrides();
+    setExtraContextFiles([]);
+    setCodeDirFiles(files);
+
+    const detectedDockerfile = findDockerfile(files);
+    setDockerfile(detectedDockerfile);
+
+    try {
+      const exposedPort = await exposedPortFromDockerfile(detectedDockerfile);
+      if (exposedPort) {
+        setDeployForm((current) => ({ ...current, internal_port: exposedPort }));
+      }
+    } catch (error) {
+      setMessage(getErrorMessage(error));
+    }
   }
 
   async function handleDeploy(event: FormEvent<HTMLFormElement>) {
@@ -115,7 +231,7 @@ export default function DashboardRoute() {
     if (!token) return;
 
     setBusy(true);
-    setMessage(deployForm.source === "dockerfile" ? "Building Dockerfile image. This can take a moment." : "Creating deployment. Pulling images can take a moment.");
+    setMessage(deployForm.source === "dockerfile" ? "Building Dockerfile image from the previewed context. This can take a moment." : "Creating deployment. Pulling images can take a moment.");
 
     const payload: Record<string, string | number | boolean> = {
       image_name: deployForm.image_name,
@@ -135,14 +251,21 @@ export default function DashboardRoute() {
     try {
       let deployment: Deployment;
       if (deployForm.source === "dockerfile") {
-        const detectedDockerfile = dockerfile ?? findDockerfile(codeDirFiles);
+        const detectedDockerfile = dockerfile ?? findDockerfile(contextFiles);
         if (!detectedDockerfile) {
           throw new Error("Choose a Dockerfile or a code directory containing one.");
         }
         const formData = new FormData();
         formData.append("dockerfile", detectedDockerfile, "Dockerfile");
-        if (codeDirFiles.length > 0) {
-          formData.append("context_archive", buildTarContext(codeDirFiles), "build-context.tar");
+        if (contextFiles.length > 0) {
+          formData.append(
+            "context_archive",
+            await buildTarContext(contextFiles, {
+              includePaths: contextIncludedPaths,
+              excludePaths: contextExcludedPaths,
+            }),
+            "build-context.tar",
+          );
         }
         formData.append("internal_port", deployForm.internal_port);
         formData.append("cpu_limit", deployForm.cpu_limit);
@@ -162,6 +285,10 @@ export default function DashboardRoute() {
       setDeployForm(initialDeployForm);
       setDockerfile(null);
       setCodeDirFiles([]);
+      setExtraContextFiles([]);
+      setContextIncludedPaths(new Set());
+      setContextExcludedPaths(new Set());
+      setContextPreview(null);
       setSelectedId(deployment.id);
       setIsPanelOpen(false); // Close side panel upon completion
       await refreshDeployments(token);
@@ -210,7 +337,8 @@ export default function DashboardRoute() {
       return;
     }
 
-    const socket = new WebSocket(logsWebSocketUrl(token, selectedDeployment.id));
+    const streamInstance = logTarget === "all" ? 1 : Number(logTarget);
+    const socket = new WebSocket(logsWebSocketUrl(token, selectedDeployment.id, streamInstance));
     socketRef.current = socket;
     setLiveLogs([]);
     setIsStreaming(true);
@@ -230,11 +358,13 @@ export default function DashboardRoute() {
     setSelectedId(id);
     setStats(null);
     setInstanceStats([]);
+    setDailyStats([]);
     setLogs("");
     setLiveLogs([]);
     setShellOutput("");
     setFileEntries([]);
     setEditorContent("");
+    setLogTarget("all");
   }
 
   async function runShellCommand() {
@@ -254,7 +384,7 @@ export default function DashboardRoute() {
     if (!token || !selectedDeployment) return;
     setToolBusy(true);
     try {
-      const result = await listContainerFiles(token, selectedDeployment.id, path);
+      const result = await listContainerFiles(token, selectedDeployment.id, path, 1);
       setFilePath(result.path);
       setFileEntries(result.entries);
     } catch (error) {
@@ -268,7 +398,7 @@ export default function DashboardRoute() {
     if (!token || !selectedDeployment) return;
     setToolBusy(true);
     try {
-      const result = await readContainerFile(token, selectedDeployment.id, path);
+      const result = await readContainerFile(token, selectedDeployment.id, path, 1);
       setEditorPath(result.path);
       setEditorContent(result.content);
     } catch (error) {
@@ -345,6 +475,14 @@ export default function DashboardRoute() {
     return () => socketRef.current?.close();
   }, []);
 
+  useEffect(() => {
+    const deploymentId = selectedDeployment?.id;
+    if (!token || !deploymentId) return;
+    getDeploymentDailyStats(token, deploymentId)
+      .then(setDailyStats)
+      .catch((error) => setMessage(getErrorMessage(error)));
+  }, [selectedDeployment?.id, token]);
+
   if (!user) {
     return (
       <main className="terminal-root flex min-h-screen items-center justify-center px-5 text-sm">
@@ -376,7 +514,13 @@ export default function DashboardRoute() {
               <button
                 key={source}
                 type="button"
-                onClick={() => setDeployForm({ ...deployForm, source })}
+                onClick={() => {
+                  setDeployForm({ ...deployForm, source });
+                  if (source === "image") {
+                    setContextPreview(null);
+                    resetContextOverrides();
+                  }
+                }}
                 className={`h-8 flex-1 rounded-md px-3 text-xs font-semibold capitalize transition ${
                   deployForm.source === source ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500 hover:text-zinc-800"
                 }`}
@@ -407,14 +551,74 @@ export default function DashboardRoute() {
                 {...{ webkitdirectory: "", directory: "" }}
                 onChange={(event) => {
                   const files = Array.from(event.target.files ?? []);
-                  setCodeDirFiles(files);
-                  setDockerfile(findDockerfile(files));
+                  void selectCodeDirectory(files);
                 }}
                 className="block w-full rounded-md border border-zinc-200 px-3 py-2 text-xs file:mr-3 file:rounded file:border-0 file:bg-zinc-950 file:px-3 file:py-1 file:text-xs file:font-semibold file:text-white cursor-pointer"
               />
               <span className="block text-[11px] leading-relaxed text-zinc-400">
                 Upload target project catalog containing your Dockerfile. Context compression generates automatically.
               </span>
+              <label className="block text-xs font-semibold tracking-wide text-zinc-600 uppercase">
+                Add Files
+                <input
+                  type="file"
+                  multiple
+                  onChange={(event) => {
+                    setExtraContextFiles((current) => [...current, ...Array.from(event.target.files ?? [])]);
+                    event.currentTarget.value = "";
+                  }}
+                  className="mt-2 block w-full rounded-md border border-zinc-200 px-3 py-2 text-xs file:mr-3 file:rounded file:border-0 file:bg-zinc-700 file:px-3 file:py-1 file:text-xs file:font-semibold file:text-white cursor-pointer"
+                />
+              </label>
+              {contextPreview ? (
+                <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                      Context Preview
+                    </span>
+                    <span className="text-[11px] text-zinc-400">
+                      {contextPreview.includedFiles.length} / {contextPreview.totalFiles} files · {formatBytes(contextPreview.includedBytes)}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-[11px] text-zinc-500">
+                    {contextPreview.dockerignoreFound ? ".dockerignore rules applied" : "Default generated-context excludes applied"}
+                    {contextPreview.ignoredFiles.length > 0 ? ` · ${contextPreview.ignoredFiles.length} ignored` : ""}
+                  </div>
+                  <div className="mt-3 max-h-28 overflow-y-auto rounded border border-zinc-200 bg-white p-2 font-mono text-[11px] leading-5 text-zinc-600">
+                    {contextPreview.includedFiles.slice(0, 12).map((path) => (
+                      <div key={path} className="flex items-center justify-between gap-2">
+                        <span className="truncate">{path}</span>
+                        <button
+                          type="button"
+                          onClick={() => excludeContextPath(path)}
+                          className="shrink-0 rounded px-1.5 py-0.5 font-sans text-[10px] font-semibold text-rose-600 hover:bg-rose-50"
+                        >
+                          remove
+                        </button>
+                      </div>
+                    ))}
+                    {contextPreview.includedFiles.length > 12 ? (
+                      <div className="text-zinc-400">+{contextPreview.includedFiles.length - 12} more</div>
+                    ) : null}
+                  </div>
+                  {contextPreview.ignoredFiles.length > 0 ? (
+                    <div className="mt-2 max-h-20 overflow-y-auto rounded border border-zinc-200 bg-white p-2 font-mono text-[11px] leading-5 text-zinc-400">
+                      {contextPreview.ignoredFiles.slice(0, 8).map((path) => (
+                        <div key={path} className="flex items-center justify-between gap-2">
+                          <span className="truncate">{path}</span>
+                          <button
+                            type="button"
+                            onClick={() => includeContextPath(path)}
+                            className="shrink-0 rounded px-1.5 py-0.5 font-sans text-[10px] font-semibold text-cyan-700 hover:bg-cyan-50"
+                          >
+                            add
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           )}
 
@@ -561,7 +765,7 @@ export default function DashboardRoute() {
 
           <div className="rounded-xl border !border-orange-500 bg-white p-5">
             <div className="flex items-center justify-between gap-3 border-b border-zinc-100 pb-3">
-              <h2 className="text-xs font-bold uppercase tracking-wider text-zinc-500">Resource Pool</h2>
+              <h2 className="text-xs font-bold uppercase tracking-wider text-zinc-500">PLatform Resource Pool</h2>
               <button
                 onClick={() => refreshResourcePool().catch((error) => setMessage(getErrorMessage(error)))}
                 className="text-xs font-semibold text-cyan-700 hover:text-cyan-800"
@@ -597,6 +801,8 @@ export default function DashboardRoute() {
           actionId={actionId}
           refreshStats={refreshStats}
           fetchLogs={fetchLogs}
+          logTarget={logTarget}
+          setLogTarget={setLogTarget}
           toggleStream={toggleStream}
           isStreaming={isStreaming}
           logs={logs}
@@ -623,6 +829,8 @@ export default function DashboardRoute() {
           uploadFileToContainer={uploadFileToContainer}
           stats={stats}
           instanceStats={instanceStats}
+          dailyStats={dailyStats}
+          refreshDailyStats={refreshDailyStats}
         />
       </div>
     </main>

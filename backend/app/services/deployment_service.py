@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.deployment import Deployment
+from app.models.deployment_daily_stat import DeploymentDailyStat
 from app.models.usage_stats import UsageStats
 from app.schemas.deployment import DeploymentCreate
 from app.services.docker_manager import DockerManager, DockerManagerError
@@ -98,6 +100,7 @@ class DeploymentService:
 
             for container_id in container_ids:
                 await self.docker.start_container(container_id)
+            await self.ensure_started_instances_running(container_ids)
 
             deployment.status = "running"
             deployment.last_error = None
@@ -190,6 +193,7 @@ class DeploymentService:
 
             for container_id in container_ids:
                 await self.docker.start_container(container_id)
+            await self.ensure_started_instances_running(container_ids)
 
             deployment.status = "running"
             deployment.last_error = None
@@ -217,7 +221,7 @@ class DeploymentService:
         container_ids = [cid for cid in (deployment.container_ids or ([deployment.container_id] if deployment.container_id else [])) if cid]
         assigned_ports = [int(port) for port in (deployment.assigned_ports or ([deployment.assigned_port] if deployment.assigned_port else []))]
 
-        if deployment.status != "running" or not container_ids or not assigned_ports:
+        if deployment.status not in {"running", "degraded"} or not container_ids or not assigned_ports:
             raise RuntimeError("Deployment has no running instances available")
 
         pairs = list(zip(container_ids, assigned_ports))
@@ -282,6 +286,79 @@ class DeploymentService:
             "max_deployments": settings.resource_pool_max_deployments,
             "active_deployments": active_deployments,
         }
+
+    async def record_route_request(self, db: AsyncSession, *, deployment_id: int) -> None:
+        stmt = insert(DeploymentDailyStat).values(
+            deployment_id=deployment_id,
+            day=self._today(),
+            request_count=1,
+        )
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_deployment_daily_stats_deployment_day",
+            set_={
+                "request_count": DeploymentDailyStat.request_count + 1,
+                "updated_at": datetime.now(timezone.utc),
+            },
+        )
+        await db.execute(stmt)
+        await db.commit()
+
+    async def deployment_daily_stats(self, db: AsyncSession, *, deployment_id: int, days: int = 5) -> list[dict[str, int | str]]:
+        today = self._today()
+        start_day = today - timedelta(days=days - 1)
+        result = await db.execute(
+            select(DeploymentDailyStat)
+            .where(DeploymentDailyStat.deployment_id == deployment_id, DeploymentDailyStat.day >= start_day)
+            .order_by(DeploymentDailyStat.day.asc())
+        )
+        rows_by_day = {row.day: row for row in result.scalars().all()}
+        output: list[dict[str, int | str]] = []
+        for offset in range(days):
+            day = start_day + timedelta(days=offset)
+            row = rows_by_day.get(day)
+            if row is None:
+                output.append(
+                    {
+                        "day": day.isoformat(),
+                        "request_count": 0,
+                        "avg_ram_usage_bytes": 0,
+                        "max_ram_usage_bytes": 0,
+                    }
+                )
+                continue
+
+            avg_ram_usage_bytes = row.ram_usage_total_bytes // row.ram_usage_samples if row.ram_usage_samples else 0
+            output.append(
+                {
+                    "day": row.day.isoformat(),
+                    "request_count": row.request_count,
+                    "avg_ram_usage_bytes": avg_ram_usage_bytes,
+                    "max_ram_usage_bytes": row.ram_usage_max_bytes,
+                }
+            )
+        return output
+
+    async def _record_daily_memory_sample(self, db: AsyncSession, *, deployment_id: int, ram_usage_bytes: int) -> None:
+        stmt = insert(DeploymentDailyStat).values(
+            deployment_id=deployment_id,
+            day=self._today(),
+            ram_usage_total_bytes=ram_usage_bytes,
+            ram_usage_samples=1,
+            ram_usage_max_bytes=ram_usage_bytes,
+        )
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_deployment_daily_stats_deployment_day",
+            set_={
+                "ram_usage_total_bytes": DeploymentDailyStat.ram_usage_total_bytes + ram_usage_bytes,
+                "ram_usage_samples": DeploymentDailyStat.ram_usage_samples + 1,
+                "ram_usage_max_bytes": func.greatest(DeploymentDailyStat.ram_usage_max_bytes, ram_usage_bytes),
+                "updated_at": datetime.now(timezone.utc),
+            },
+        )
+        await db.execute(stmt)
+
+    def _today(self) -> date:
+        return datetime.now(timezone.utc).date()
 
     async def ensure_pool_capacity(self, db: AsyncSession, *, payload: DeploymentCreate) -> None:
         pool = await self.resource_pool(db)
@@ -356,6 +433,53 @@ class DeploymentService:
         await db.commit()
         return True
 
+    async def ensure_started_instances_running(self, container_ids: list[str]) -> None:
+        await asyncio.sleep(settings.docker_container_start_grace_seconds)
+        failed: list[str] = []
+        for container_id in container_ids:
+            inspected = await self.docker.inspect_container(container_id)
+            state = inspected.get("State", {})
+            if state.get("Running"):
+                continue
+            logs = await self.docker.get_logs(container_id, tail=60)
+            failed.append(f"{container_id[:12]} exited with status {state.get('Status', 'unknown')}: {logs.strip()}")
+
+        if failed:
+            raise DockerManagerError("One or more deployment instances failed to start. " + " | ".join(failed))
+
+    async def refresh_instance_health(self, db: AsyncSession, deployment: Deployment) -> None:
+        container_ids = [cid for cid in (deployment.container_ids or ([deployment.container_id] if deployment.container_id else [])) if cid]
+        if not container_ids:
+            return
+
+        running_count = 0
+        failed_messages: list[str] = []
+        for container_id in container_ids:
+            try:
+                inspected = await self.docker.inspect_container(container_id)
+            except DockerManagerError as exc:
+                failed_messages.append(str(exc))
+                continue
+
+            state = inspected.get("State", {})
+            if state.get("Running"):
+                running_count += 1
+                continue
+
+            failed_messages.append(f"{container_id[:12]} is {state.get('Status', 'unknown')}")
+
+        if running_count == len(container_ids):
+            deployment.status = "running"
+            deployment.last_error = None
+        elif running_count > 0:
+            deployment.status = "degraded"
+            deployment.last_error = "; ".join(failed_messages)
+        else:
+            deployment.status = "crashed"
+            deployment.last_error = "; ".join(failed_messages)
+
+        await db.commit()
+
     async def record_stats(self, db: AsyncSession, deployment: Deployment) -> UsageStats | None:
         if not deployment.container_id:
             return None
@@ -382,6 +506,7 @@ class DeploymentService:
 
         deployment.status = "running" if stats["running"] else stats["status"]
         deployment.restart_count = stats["restart_count"]
+        await self._record_daily_memory_sample(db, deployment_id=deployment.id, ram_usage_bytes=stats["ram_usage_bytes"])
         await db.execute(delete(UsageStats).where(UsageStats.deployment_id == deployment.id, UsageStats.id != usage.id))
         await db.commit()
         await db.refresh(usage)

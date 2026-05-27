@@ -44,6 +44,21 @@ export type InstanceStats = Stats & {
   assigned_port: number;
 };
 
+export type InstanceLogs = {
+  deployment_id: number;
+  instance_index: number;
+  container_id: string;
+  assigned_port: number | null;
+  logs: string;
+};
+
+export type DailyDeploymentStats = {
+  day: string;
+  request_count: number;
+  avg_ram_usage_bytes: number;
+  max_ram_usage_bytes: number;
+};
+
 export type ResourcePool = {
   max_cpu: number;
   used_cpu: number;

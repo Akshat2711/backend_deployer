@@ -25,13 +25,24 @@ async def stream_deployment_logs(websocket: WebSocket, deployment_id: int) -> No
         )
         deployment = result.scalar_one_or_none()
 
-    if deployment is None or not deployment.container_id:
+    if deployment is None:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
+    container_ids = [cid for cid in (deployment.container_ids or ([deployment.container_id] if deployment.container_id else [])) if cid]
+    instance_index_raw = websocket.query_params.get("instance_index") or "1"
+    try:
+        instance_index = int(instance_index_raw)
+    except ValueError:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    if instance_index < 1 or instance_index > len(container_ids):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    container_id = container_ids[instance_index - 1]
 
     await websocket.accept()
     try:
-        async for line in websocket.app.state.docker_manager.stream_logs(deployment.container_id):
+        async for line in websocket.app.state.docker_manager.stream_logs(container_id):
             await websocket.send_text(line)
     except WebSocketDisconnect:
         return
