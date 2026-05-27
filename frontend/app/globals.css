@@ -1,0 +1,235 @@
+@import "tailwindcss";
+
+:root {
+  --background: #000000;
+  --foreground: #f4f4f5;         /* Off-white zinc for highly readable primary text */
+  --terminal-bg: #09090b;        /* Deep matte black for container widgets */
+  --terminal-panel: #18181b;     /* Slightly lighter tint for panel headers/subsections */
+  --terminal-primary: #f97316;    /* Neon Orange for primary interactive items, tags, and focal points */
+  --terminal-primary-hover: #ea580c; /* Darker orange state */
+  --terminal-muted: #71717a;     /* Dark zinc for low priority subtitles and descriptions */
+  --terminal-dim: #27272a;       /* Grid line backdrops */
+  --terminal-error: #ef4444;     /* Crisis red alerts */
+  --terminal-border: #27272a;    /* Flat industrial dark borders */
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-terminal-mono);
+  --font-mono: var(--font-terminal-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-terminal-mono), "JetBrains Mono", "Fira Code", monospace;
+}
+
+button,
+a,
+input,
+select,
+textarea {
+  letter-spacing: 0.025em;
+}
+
+::selection {
+  background: var(--terminal-primary);
+  color: #000000;
+}
+
+/* --- THEME FORCE LAYER --- */
+.terminal-root {
+  min-height: 100vh;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+}
+
+/* Enforce rigid 90-degree corners and flat canvas profiles globally */
+.terminal-root * {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+.terminal-root main,
+.terminal-root header,
+.terminal-root section,
+.terminal-root aside,
+.terminal-root form,
+.terminal-root table,
+.terminal-root pre,
+.terminal-root textarea,
+.terminal-root input,
+.terminal-root select {
+  font-family: inherit;
+}
+
+/* Dark utility background normalization blocks */
+.terminal-root .bg-white,
+.terminal-root .bg-zinc-50,
+.terminal-root .bg-zinc-100,
+.terminal-root .bg-cyan-50\/50,
+.terminal-root .bg-zinc-50\/30,
+.terminal-root .bg-zinc-50\/50,
+.terminal-root .hover\:bg-zinc-50:hover,
+.terminal-root .hover\:bg-zinc-100:hover,
+.terminal-root .hover\:bg-white:hover {
+  background-color: var(--terminal-bg) !important;
+}
+
+.terminal-root .bg-zinc-900,
+.terminal-root .bg-zinc-950,
+.terminal-root .bg-cyan-700,
+.terminal-root .hover\:bg-zinc-800:hover,
+.terminal-root .hover\:bg-cyan-800:hover,
+.terminal-root .hover\:bg-cyan-900:hover {
+  background-color: var(--terminal-primary) !important;
+  color: #000000 !important;
+  text-shadow: none;
+}
+
+.terminal-root .bg-emerald-600 {
+  background-color: var(--terminal-primary) !important;
+}
+
+/* Rigid dark industrial grid lines */
+.terminal-root .border,
+.terminal-root .border-b,
+.terminal-root .border-l-2,
+.terminal-root .border-dashed,
+.terminal-root .border-zinc-100,
+.terminal-root .border-zinc-200,
+.terminal-root .border-zinc-300,
+.terminal-root .border-cyan-200,
+.terminal-root .border-cyan-300 {
+  border-color: var(--terminal-border) !important;
+}
+
+.terminal-root .border-rose-200,
+.terminal-root .bg-rose-50 {
+  border-color: var(--terminal-error) !important;
+  background-color: rgba(239, 68, 68, 0.08) !important;
+}
+
+/* Content font text elements forced properties */
+.terminal-root .text-zinc-950,
+.terminal-root .text-zinc-900,
+.terminal-root .text-zinc-800,
+.terminal-root .text-zinc-700,
+.terminal-root .text-zinc-600,
+.terminal-root .text-cyan-900,
+.terminal-root .text-cyan-800,
+.terminal-root .text-cyan-700,
+.terminal-root .text-white {
+  color: var(--foreground) !important;
+}
+
+.terminal-root .text-zinc-400,
+.terminal-root .text-zinc-500 {
+  color: var(--terminal-muted) !important;
+}
+
+.terminal-root .text-rose-700,
+.terminal-root .text-rose-800 {
+  color: var(--terminal-error) !important;
+}
+
+/* Interactive Input Elements */
+.terminal-root input,
+.terminal-root select,
+.terminal-root textarea {
+  background: var(--background) !important;
+  border: 1px solid var(--terminal-border) !important;
+  color: var(--foreground) !important;
+  caret-color: var(--terminal-primary);
+  outline: none !important;
+}
+
+.terminal-root input:focus,
+.terminal-root select:focus,
+.terminal-root textarea:focus,
+.terminal-root button:focus-visible,
+.terminal-root a:focus-visible {
+  border-color: var(--terminal-primary) !important;
+  outline: 1px solid var(--terminal-primary) !important;
+}
+
+/* Action Control Hooks */
+.terminal-root button,
+.terminal-root a {
+  color: var(--foreground);
+  white-space: nowrap;
+  background: transparent;
+  transition: all 150ms ease;
+}
+
+.terminal-root button:hover,
+.terminal-root a:hover {
+  background: var(--terminal-primary) !important;
+  color: #000000 !important;
+  border-color: var(--terminal-primary) !important;
+  text-shadow: none;
+}
+
+.terminal-root button:disabled {
+  border-color: var(--terminal-dim) !important;
+  color: var(--terminal-muted) !important;
+  background: transparent !important;
+  cursor: not-allowed;
+}
+
+/* Layout Structural Matrix Overrides */
+.terminal-root thead,
+.terminal-root tbody,
+.terminal-root tr {
+  border-color: var(--terminal-border) !important;
+}
+
+.terminal-root thead {
+  background-color: var(--terminal-panel) !important;
+}
+
+.terminal-root pre {
+  background: #050506 !important;
+  border: 1px solid var(--terminal-border);
+  color: #22c55e !important; /* Matrix Green standard logger display output text */
+}
+
+.terminal-window {
+  position: relative;
+  border: 1px solid var(--terminal-border);
+  background: var(--terminal-bg);
+}
+
+/* Custom UI Indicators */
+.terminal-title {
+  color: var(--terminal-primary) !important;
+}
+
+.terminal-title::before {
+  color: var(--terminal-primary);
+  content: "> ";
+}
+
+.terminal-progress {
+  display: grid;
+  grid-template-columns: repeat(20, minmax(0, 1fr));
+  gap: 2px;
+}
+
+.terminal-progress span {
+  height: 0.55rem;
+  border: 1px solid var(--terminal-border);
+}
+
+.terminal-progress span[data-active="true"] {
+  background: var(--terminal-primary);
+}
+
+@keyframes terminal-blink {
+  50% {
+    opacity: 0;
+  }
+}
