@@ -334,6 +334,7 @@ async def route_deployment_traffic(
     # Set cookies so the 404 fallback proxy can capture absolute subpaths
     response.set_cookie("deploy_id", str(deployment_id), path="/")
     response.set_cookie("deploy_port", str(port), path="/")
+    print(f"[DEBUG]Routing request for deployment {deployment_id} to port {port} (path: /{path}, query: {request.url.query})")
     return response
 
 

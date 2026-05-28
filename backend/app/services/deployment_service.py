@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import re
 import secrets
 import shutil
@@ -51,6 +52,7 @@ class DeploymentService:
     def __init__(self, docker_manager: DockerManager) -> None:
         self.docker = docker_manager
         self._capacity_lock = asyncio.Lock()
+        self._stats_cache: dict[str, tuple[float, dict]] = {}
 
     async def create_github_deployment(self, db: AsyncSession, *, user_id: int, payload: GithubDeploymentCreate) -> Deployment:
         self.validate_github_repo_url(payload.github_repo_url)
@@ -397,22 +399,39 @@ class DeploymentService:
 
         pairs = list(zip(container_ids, assigned_ports))
         scored_ports: list[tuple[float, int]] = []
-        for container_id, port in pairs:
+        now = time.time()
+
+        # Helper to fetch stats in the background to avoid blocking user requests
+        async def fetch_and_cache_stats(c_id: str) -> None:
             try:
-                stats = await self.docker.get_stats(container_id)
-            except DockerManagerError:
-                continue
-            if not stats["running"]:
-                continue
-            ram_limit = int(stats["ram_limit_bytes"]) or 1
-            ram_percent = (int(stats["ram_usage_bytes"]) / ram_limit) * 100
-            score = float(stats["cpu_usage_percent"]) + ram_percent
+                stats = await self.docker.get_stats(c_id)
+                self._stats_cache[c_id] = (time.time(), stats)
+            except Exception:
+                pass
+
+        for container_id, port in pairs:
+            cached_data = self._stats_cache.get(container_id)
+            if cached_data is None:
+                # Cache miss: trigger background fetch and use a default baseline score (0.0)
+                asyncio.create_task(fetch_and_cache_stats(container_id))
+                score = 0.0
+            else:
+                cache_time, stats = cached_data
+                # Cache hits older than 10 seconds: trigger background refresh, use cached values immediately
+                if now - cache_time > 10.0:
+                    asyncio.create_task(fetch_and_cache_stats(container_id))
+                
+                if not stats.get("running", True):
+                    continue
+                ram_limit = int(stats.get("ram_limit_bytes", 1)) or 1
+                ram_percent = (int(stats.get("ram_usage_bytes", 0)) / ram_limit) * 100
+                score = float(stats.get("cpu_usage_percent", 0.0)) + ram_percent
+
             scored_ports.append((score, port))
 
         if scored_ports:
-            print("Choosing route port:", min(scored_ports, key=lambda item: item[0])[1])
             return min(scored_ports, key=lambda item: item[0])[1]
-        
+
         return assigned_ports[0]
     
 
