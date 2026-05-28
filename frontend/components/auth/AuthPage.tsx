@@ -47,14 +47,14 @@ export function AuthPage() {
 
   return (
     <main className="terminal-root min-h-screen bg-zinc-50 text-zinc-950 dark:bg-zinc-950 dark:text-zinc-50">
-      <section className="mx-auto flex min-h-screen w-full max-w-6xl items-center px-6 py-12">
-        <div className="grid w-full gap-12 lg:grid-cols-[1fr_440px] lg:items-center">
+      <section className="mx-auto flex min-h-screen w-full max-w-6xl items-center px-4 py-8 sm:px-6 lg:py-12">
+        <div className="grid w-full gap-8 lg:gap-12 lg:grid-cols-[1fr_440px] lg:items-center">
           
           {/* Left Hero Column */}
-          <div className="max-w-2xl">
+          <div className="max-w-2xl w-full">
             {/* Expanded Hero Logo Section */}
-            <div className="mb-8 flex flex-col items-start gap-5 sm:flex-row sm:items-center">
-              <div className="relative rounded-2xl   p-3 shadow-sm shadow-zinc-100 ">
+            <div className="mb-6 sm:mb-8 flex flex-col items-start gap-4 sm:gap-5 sm:flex-row sm:items-center">
+              <div className="relative rounded-2xl p-2 sm:p-3 shadow-sm shadow-zinc-100 max-w-[140px] sm:max-w-none">
                 <div className="absolute inset-0 animate-pulse rounded-2xl blur-sm" />
                 <Image
                   src="/assets/logo.gif"
@@ -62,35 +62,35 @@ export function AuthPage() {
                   width={240}
                   height={240}
                   priority
-                  className="relative z-10 object-contain"
+                  className="relative z-10 h-auto w-full object-contain sm:w-[180px] lg:w-[240px]"
                 />
               </div>
               <div>
                 <div className="flex items-center gap-2">
-                  <span className="inline-block h-2 w-2 rounded-full bg-emerald-500 animate-ping" />
-                  <p className="terminal-title text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">
+                  <span className="inline-block h-2 w-2 flex-shrink-0 rounded-full bg-emerald-500 animate-ping" />
+                  <p className="terminal-title text-[10px] sm:text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400 break-words">
                     CloudTurtle Infrastructure v2.4
                   </p>
                 </div>
-                <h2 className="mt-1 font-mono text-6xl font-bold text-orange-500 dark:text-orange-400">
+                <h2 className="mt-1 font-mono text-3xl sm:text-4xl lg:text-6xl font-bold text-orange-500 dark:text-orange-400 tracking-tight">
                   cloudturtle connect
                 </h2>
               </div>
             </div>
 
             {/* Value Proposition */}
-            <h1 className="text-4xl font-bold tracking-tight uppercase leading-[1.1] sm:text-5xl lg:text-6xl">
+            <h1 className="text-3xl font-bold tracking-tight uppercase leading-[1.1] sm:text-5xl lg:text-6xl">
               Next-Gen Backend Hosting Partner.
             </h1>
             
-            <p className="mt-6 max-w-xl text-base leading-7 text-zinc-600 dark:text-zinc-400 sm:text-lg">
+            <p className="mt-4 sm:mt-6 max-w-xl text-sm leading-6 text-zinc-600 dark:text-zinc-400 sm:text-base sm:leading-7 lg:text-lg">
               CloudTurtle is a high-performance cloud platform engineered for production backend architectures. 
               Deploy containerized applications, provision persistent environments, manage server limits, 
               and spin up continuous deployments directly through our micro-CLI platform.
             </p>
 
             {/* Platform Feature Badges */}
-            <div className="mt-8 grid max-w-2xl gap-3 sm:grid-cols-3">
+            <div className="mt-6 sm:mt-8 grid gap-3 grid-cols-1 sm:grid-cols-3">
               {[
                 { title: "Isolated Runtimes", desc: "Dedicated resource limits" },
                 { title: "FastAPI & Go Native", desc: "Optimized for API scaling" },
@@ -98,7 +98,7 @@ export function AuthPage() {
               ].map((item) => (
                 <div 
                   key={item.title} 
-                  className="border-l-2 border-cyan-600 bg-zinc-100/60 p-4 shadow-sm dark:bg-zinc-900/40"
+                  className="border-l-2 border-cyan-600 bg-zinc-100/60 p-3 sm:p-4 shadow-sm dark:bg-zinc-900/40"
                 >
                   <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{item.title}</p>
                   <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{item.desc}</p>
@@ -108,14 +108,14 @@ export function AuthPage() {
           </div>
 
           {/* Right Form Column */}
-          <form onSubmit={handleAuth} className="terminal-window border border-zinc-200 bg-white p-8 shadow-xl dark:!border-orange-400 dark:bg-zinc-900/50 rounded-xl">
+          <form onSubmit={handleAuth} className="terminal-window border border-zinc-200 bg-white p-5 sm:p-8 shadow-xl dark:!border-orange-400 dark:bg-zinc-900/50 rounded-xl w-full">
             <div className="mb-6 flex rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800">
               {(["login", "signup"] as const).map((item) => (
                 <button
                   key={item}
                   type="button"
                   onClick={() => setMode(item)}
-                  className={`h-10 flex-1 rounded-md px-3 text-sm font-semibold capitalize transition ${
+                  className={`h-10 flex-1 rounded-md px-2 sm:px-3 text-sm font-semibold capitalize transition ${
                     mode === item 
                       ? "bg-white text-zinc-950 shadow-sm dark:bg-zinc-700 dark:text-white" 
                       : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
@@ -154,19 +154,19 @@ export function AuthPage() {
             <button
               type="submit"
               disabled={busy}
-              className="mt-6 h-11 w-full rounded-md bg-zinc-950 px-4 text-sm font-semibold text-white transition hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-950 dark:hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-50"
+              className="mt-6 h-11 w-full rounded-md bg-zinc-950 px-4 text-sm font-semibold text-white transition hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-950 dark:hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-50 break-words"
             >
               {busy ? "Authorizing node..." : mode === "signup" ? "Initialize provisioning" : "Establish session"}
             </button>
 
             {message ? (
-              <div className="mt-4 rounded-md bg-red-50 p-3 text-sm text-red-600 border border-red-100 dark:bg-red-950/30 dark:text-red-400 dark:border-red-900/30">
+              <div className="mt-4 rounded-md bg-red-50 p-3 text-sm text-red-600 border border-red-100 dark:bg-red-950/30 dark:text-red-400 dark:border-red-900/30 break-words">
                 {message}
               </div>
             ) : null}
             
             <div className="mt-6 border-t border-zinc-100 pt-4 dark:border-zinc-800">
-              <p className="font-mono text-[10px] uppercase tracking-widest text-zinc-400 dark:text-zinc-500">
+              <p className="font-mono text-[10px] uppercase tracking-widest text-zinc-400 dark:text-zinc-500 break-all">
                 Remote Edge API: {apiBase}
               </p>
             </div>

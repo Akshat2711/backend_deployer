@@ -527,8 +527,16 @@ export default function DashboardRoute() {
 
   return (
     <main className="terminal-root min-h-screen bg-zinc-50/50 text-zinc-950 antialiased">
+      {/* Backdrop for Slide-over Drawer Panel */}
+      {isPanelOpen && (
+        <div 
+          className="fixed inset-0 z-40 bg-zinc-950/20 backdrop-blur-sm transition-opacity"
+          onClick={() => setIsPanelOpen(false)}
+        />
+      )}
+
       {/* Dynamic Slide-over Creation Draw Panel */}
-      <div className={`fixed inset-y-0 right-0 z-50 w-full max-w-md transform border-l border-zinc-200 bg-white p-6 shadow-2xl transition-transform duration-300 ease-in-out ${isPanelOpen ? "translate-x-0" : "translate-x-full"}`}>
+      <div className={`fixed inset-y-0 right-0 z-50 w-full sm:max-w-md transform border-l border-zinc-200 bg-white p-4 sm:p-6 shadow-2xl transition-transform duration-300 ease-in-out ${isPanelOpen ? "translate-x-0" : "translate-x-full"}`}>
         <div className="flex items-center justify-between border-b border-zinc-100 pb-4">
           <div>
             <span className="text-xs font-mono tracking-widest text-zinc-400 uppercase">Config Spec</span>
@@ -536,7 +544,7 @@ export default function DashboardRoute() {
           </div>
           <button 
             onClick={() => setIsPanelOpen(false)}
-            className="rounded-md p-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"
+            className="rounded-md p-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 focus:outline-none"
           >
             ✕
           </button>
@@ -555,11 +563,11 @@ export default function DashboardRoute() {
                     resetContextOverrides();
                   }
                 }}
-                className={`h-8 flex-1 rounded-md px-3 text-xs font-semibold capitalize transition ${
+                className={`h-8 flex-1 rounded-md px-1 sm:px-3 text-[10px] sm:text-xs font-semibold capitalize transition truncate ${
                   deployForm.source === source ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500 hover:text-zinc-800"
                 }`}
               >
-                {source === "image" ? "Docker Image" : source === "github" ? "GitHub Repo" : "Dockerfile Context"}
+                {source === "image" ? "Docker" : source === "github" ? "GitHub" : "Dockerfile"}
               </button>
             ))}
           </div>
@@ -648,7 +656,7 @@ export default function DashboardRoute() {
               </label>
               {contextPreview ? (
                 <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3">
-                  <div className="flex items-center justify-between gap-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 sm:gap-3">
                     <span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
                       Context Preview
                     </span>
@@ -698,7 +706,7 @@ export default function DashboardRoute() {
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <label className="block text-xs font-semibold tracking-wide text-zinc-600 uppercase">
               Internal Port
               <input
@@ -804,25 +812,24 @@ export default function DashboardRoute() {
           <button
             type="submit"
             disabled={busy}
-            className="h-11 w-full rounded-md bg-cyan-700 px-4 text-sm font-semibold transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-zinc-300"
+            className="h-11 w-full rounded-md bg-cyan-700 px-4 text-sm font-semibold text-white transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-zinc-300"
           >
             {busy ? "Deploying Cluster Node..." : deployForm.source === "dockerfile" ? "Build & Deploy Artifact" : "Initialize Live Image"}
           </button>
         </form>
       </div>
 
-
-    <Navbar
-      userEmail={user.email}
-      onNewDeployment={() => setIsPanelOpen(true)}
-      onSignOut={signOut}
-    />
+      <Navbar
+        userEmail={user.email}
+        onNewDeployment={() => setIsPanelOpen(true)}
+        onSignOut={signOut}
+      />
 
       {/* Primary Layout Engine Context Grid */}
-      <div className="mx-auto grid w-full gap-6 px-6 py-6 lg:grid-cols-[280px_minmax(0,1fr)]">
-        {/* Simplified Status Metrics Sidebar */}
-        <aside className="space-y-6">
-          <div className="rounded-xl border !border-orange-500 bg-white p-5">
+      <div className="mx-auto grid w-full gap-6 px-4 py-6 grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)] sm:px-6">
+        {/* Responsive Metrics Sidebar/Top bar */}
+        <aside className="space-y-6 w-full order-1 lg:order-none">
+          <div className="rounded-xl border !border-orange-500 bg-white p-4 sm:p-5">
             <div className="flex items-center justify-between gap-3 border-b border-zinc-100 pb-3">
               <h2 className="text-xs font-bold uppercase tracking-wider text-zinc-500">Fleet Health</h2>
               <button
@@ -839,9 +846,9 @@ export default function DashboardRoute() {
             </div>
           </div>
 
-          <div className="rounded-xl border !border-orange-500 bg-white p-5">
+          <div className="rounded-xl border !border-orange-500 bg-white p-4 sm:p-5">
             <div className="flex items-center justify-between gap-3 border-b border-zinc-100 pb-3">
-              <h2 className="text-xs font-bold uppercase tracking-wider text-zinc-500">PLatform Resource Pool</h2>
+              <h2 className="text-xs font-bold uppercase tracking-wider text-zinc-500">Platform Resource Pool</h2>
               <button
                 onClick={() => refreshResourcePool().catch((error) => setMessage(getErrorMessage(error)))}
                 className="text-xs font-semibold text-cyan-700 hover:text-cyan-800"
@@ -855,7 +862,7 @@ export default function DashboardRoute() {
                 <PoolBar label="RAM" used={resourcePool.used_ram_mb} max={resourcePool.max_ram_mb} suffix=" MB" />
                 <PoolBar label="Storage" used={resourcePool.used_storage_mb} max={resourcePool.max_storage_mb} suffix=" MB" />
                 <PoolBar label="PIDs" used={resourcePool.used_pids} max={resourcePool.max_pids} suffix="" />
-                <div className="flex items-center justify-between border-t border-zinc-100 pt-3 text-xs text-zinc-500">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between border-t border-zinc-100 pt-3 gap-1 text-xs text-zinc-500">
                   <span>Node Allocation Capacity</span>
                   <span className="font-semibold text-zinc-800">{resourcePool.active_deployments} / {resourcePool.max_deployments}</span>
                 </div>
@@ -866,49 +873,52 @@ export default function DashboardRoute() {
           </div>
         </aside>
 
-        <DashboardSection
-          message={message}
-          setMessage={setMessage}
-          deployments={deployments}
-          selectedDeployment={selectedDeployment}
-          selectDeployment={selectDeployment}
-          refreshDeployments={refreshDeployments}
-          runAction={runAction}
-          redeployGithub={redeployGithub}
-          actionId={actionId}
-          refreshStats={refreshStats}
-          fetchLogs={fetchLogs}
-          logTarget={logTarget}
-          setLogTarget={setLogTarget}
-          toggleStream={toggleStream}
-          isStreaming={isStreaming}
-          logs={logs}
-          liveLogs={liveLogs}
-          runShellCommand={runShellCommand}
-          shellCommand={shellCommand}
-          setShellCommand={setShellCommand}
-          shellOutput={shellOutput}
-          toolBusy={toolBusy}
-          browseFiles={browseFiles}
-          filePath={filePath}
-          setFilePath={setFilePath}
-          fileEntries={fileEntries}
-          openFile={openFile}
-          editorPath={editorPath}
-          setEditorPath={setEditorPath}
-          saveFile={saveFile}
-          editorContent={editorContent}
-          setEditorContent={setEditorContent}
-          uploadPath={uploadPath}
-          setUploadPath={setUploadPath}
-          setContainerUpload={setContainerUpload}
-          containerUpload={containerUpload}
-          uploadFileToContainer={uploadFileToContainer}
-          stats={stats}
-          instanceStats={instanceStats}
-          dailyStats={dailyStats}
-          refreshDailyStats={refreshDailyStats}
-        />
+        {/* Workspace Display Core Content Block */}
+        <div className="w-full min-w-0">
+          <DashboardSection
+            message={message}
+            setMessage={setMessage}
+            deployments={deployments}
+            selectedDeployment={selectedDeployment}
+            selectDeployment={selectDeployment}
+            refreshDeployments={refreshDeployments}
+            runAction={runAction}
+            redeployGithub={redeployGithub}
+            actionId={actionId}
+            refreshStats={refreshStats}
+            fetchLogs={fetchLogs}
+            logTarget={logTarget}
+            setLogTarget={setLogTarget}
+            toggleStream={toggleStream}
+            isStreaming={isStreaming}
+            logs={logs}
+            liveLogs={liveLogs}
+            runShellCommand={runShellCommand}
+            shellCommand={shellCommand}
+            setShellCommand={setShellCommand}
+            shellOutput={shellOutput}
+            toolBusy={toolBusy}
+            browseFiles={browseFiles}
+            filePath={filePath}
+            setFilePath={setFilePath}
+            fileEntries={fileEntries}
+            openFile={openFile}
+            editorPath={editorPath}
+            setEditorPath={setEditorPath}
+            saveFile={saveFile}
+            editorContent={editorContent}
+            setEditorContent={setEditorContent}
+            uploadPath={uploadPath}
+            setUploadPath={setUploadPath}
+            setContainerUpload={setContainerUpload}
+            containerUpload={containerUpload}
+            uploadFileToContainer={uploadFileToContainer}
+            stats={stats}
+            instanceStats={instanceStats}
+            dailyStats={dailyStats}
+            refreshDailyStats={refreshDailyStats}
+          />
+        </div>
       </div>
     </main>
   );

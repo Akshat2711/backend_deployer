@@ -10,7 +10,7 @@ export default function Navbar({
   onSignOut,
 }: NavbarProps) {
   return (
-    <header className="border-b border-zinc-200 bg-white">
+    <header className="border-b border-zinc-200 ">
       <div className="flex w-full flex-col gap-4 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
 
         <div className="flex items-center gap-3">
