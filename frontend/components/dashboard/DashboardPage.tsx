@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import {
   createDeployment,
   createDockerfileDeployment,
+  createGithubDeployment,
   deleteDeployment,
   getDeploymentDailyStats,
   execInDeployment,
@@ -19,6 +20,7 @@ import {
   listDeployments,
   logsWebSocketUrl,
   readContainerFile,
+  redeployGithubDeployment,
   runDeploymentAction,
   uploadContainerFile,
   writeContainerFile,
@@ -35,6 +37,10 @@ import Navbar from "@/components/global_ui/Navbar";
 const initialDeployForm: DeployFormState = {
   source: "image",
   image_name: "nginx:alpine",
+  github_repo_url: "",
+  github_branch: "main",
+  github_context_path: ".",
+  github_auto_deploy: false,
   internal_port: "80",
   cpu_limit: "0.25",
   ram_limit: "128",
@@ -231,10 +237,14 @@ export default function DashboardRoute() {
     if (!token) return;
 
     setBusy(true);
-    setMessage(deployForm.source === "dockerfile" ? "Building Dockerfile image from the previewed context. This can take a moment." : "Creating deployment. Pulling images can take a moment.");
+    setMessage(deployForm.source === "image" ? "Creating deployment. Pulling images can take a moment." : "Building deployment image. This can take a moment.");
 
     const payload: Record<string, string | number | boolean> = {
       image_name: deployForm.image_name,
+      github_repo_url: deployForm.github_repo_url,
+      github_branch: deployForm.github_branch,
+      github_context_path: deployForm.github_context_path,
+      github_auto_deploy: deployForm.github_auto_deploy,
       internal_port: Number(deployForm.internal_port),
       cpu_limit: Number(deployForm.cpu_limit),
       ram_limit: Number(deployForm.ram_limit),
@@ -278,6 +288,8 @@ export default function DashboardRoute() {
           formData.append("read_only", deployForm.read_only);
         }
         deployment = await createDockerfileDeployment(token, formData);
+      } else if (deployForm.source === "github") {
+        deployment = await createGithubDeployment(token, payload);
       } else {
         deployment = await createDeployment(token, payload);
       }
@@ -320,6 +332,22 @@ export default function DashboardRoute() {
       await refreshDeployments(token);
       await refreshResourcePool(token);
       setMessage(`Deployment #${id} ${action === "delete" ? "deleted" : `${action}ed`}.`);
+    } catch (error) {
+      setMessage(getErrorMessage(error));
+    } finally {
+      setActionId(null);
+    }
+  }
+
+  async function redeployGithub(id: number) {
+    if (!token) return;
+    setActionId(id);
+    setMessage("Pulling latest GitHub code and rebuilding deployment.");
+    try {
+      await redeployGithubDeployment(token, id);
+      await refreshDeployments(token);
+      await refreshResourcePool(token);
+      setMessage(`Deployment #${id} updated from GitHub.`);
     } catch (error) {
       setMessage(getErrorMessage(error));
     } finally {
@@ -457,19 +485,25 @@ export default function DashboardRoute() {
       setToken(savedToken);
       getMe(savedToken)
         .then(setUser)
-        .then(() => listDeployments(savedToken))
-        .then((rows) => {
-          setDeployments(rows);
-          setSelectedId((current) => current ?? rows[0]?.id ?? null);
-        })
-        .then(() => getResourcePool(savedToken))
-        .then(setResourcePool)
         .catch(() => {
           localStorage.removeItem(tokenStorageKey);
           router.replace("/login");
         });
     });
   }, [router]);
+
+  useEffect(() => {
+    if (!token || !user) return;
+    Promise.all([listDeployments(token), getResourcePool(token)])
+      .then(([rows, pool]) => {
+        setDeployments(rows);
+        setSelectedId((current) => current ?? rows[0]?.id ?? null);
+        setResourcePool(pool);
+      })
+      .catch((error) => {
+        setMessage(getErrorMessage(error));
+      });
+  }, [token, user]);
 
   useEffect(() => {
     return () => socketRef.current?.close();
@@ -510,7 +544,7 @@ export default function DashboardRoute() {
 
         <form onSubmit={handleDeploy} className="mt-6 space-y-5 overflow-y-auto h-[calc(100vh-120px)] pr-1">
           <div className="flex rounded-lg bg-zinc-100 p-1">
-            {(["image", "dockerfile"] as const).map((source) => (
+            {(["image", "dockerfile", "github"] as const).map((source) => (
               <button
                 key={source}
                 type="button"
@@ -525,7 +559,7 @@ export default function DashboardRoute() {
                   deployForm.source === source ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500 hover:text-zinc-800"
                 }`}
               >
-                {source === "image" ? "Docker Image" : "Dockerfile Context"}
+                {source === "image" ? "Docker Image" : source === "github" ? "GitHub Repo" : "Dockerfile Context"}
               </button>
             ))}
           </div>
@@ -541,6 +575,48 @@ export default function DashboardRoute() {
                 placeholder="nginx:alpine"
               />
             </label>
+          ) : deployForm.source === "github" ? (
+            <div className="space-y-3">
+              <label className="block text-xs font-semibold tracking-wide text-zinc-600 uppercase">
+                GitHub Repository URL
+                <input
+                  required
+                  value={deployForm.github_repo_url}
+                  onChange={(event) => setDeployForm({ ...deployForm, github_repo_url: event.target.value })}
+                  className="mt-2 h-10 w-full rounded-md border border-zinc-200 bg-zinc-50 px-3 font-mono text-sm outline-none focus:border-cyan-600 focus:bg-white transition"
+                  placeholder="https://github.com/owner/repo"
+                />
+              </label>
+              <label className="block text-xs font-semibold tracking-wide text-zinc-600 uppercase">
+                Branch
+                <input
+                  required
+                  value={deployForm.github_branch}
+                  onChange={(event) => setDeployForm({ ...deployForm, github_branch: event.target.value })}
+                  className="mt-2 h-10 w-full rounded-md border border-zinc-200 bg-zinc-50 px-3 font-mono text-sm outline-none focus:border-cyan-600 focus:bg-white transition"
+                  placeholder="main"
+                />
+              </label>
+              <label className="block text-xs font-semibold tracking-wide text-zinc-600 uppercase">
+                Base Path
+                <input
+                  required
+                  value={deployForm.github_context_path}
+                  onChange={(event) => setDeployForm({ ...deployForm, github_context_path: event.target.value })}
+                  className="mt-2 h-10 w-full rounded-md border border-zinc-200 bg-zinc-50 px-3 font-mono text-sm outline-none focus:border-cyan-600 focus:bg-white transition"
+                  placeholder="backend or frontend"
+                />
+              </label>
+              <label className="flex items-center justify-between gap-3 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-zinc-600">
+                Auto Deploy New Changes
+                <input
+                  type="checkbox"
+                  checked={deployForm.github_auto_deploy}
+                  onChange={(event) => setDeployForm({ ...deployForm, github_auto_deploy: event.target.checked })}
+                  className="h-4 w-4 accent-cyan-700"
+                />
+              </label>
+            </div>
           ) : (
             <div className="space-y-2">
               <label className="block text-xs font-semibold tracking-wide text-zinc-600 uppercase">Code Directory Context</label>
@@ -798,6 +874,7 @@ export default function DashboardRoute() {
           selectDeployment={selectDeployment}
           refreshDeployments={refreshDeployments}
           runAction={runAction}
+          redeployGithub={redeployGithub}
           actionId={actionId}
           refreshStats={refreshStats}
           fetchLogs={fetchLogs}

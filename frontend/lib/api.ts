@@ -11,6 +11,7 @@ async function jsonRequest<T>(path: string, token?: string, options: RequestInit
     ...options,
     headers: {
       "Content-Type": "application/json",
+      "ngrok-skip-browser-warning": "true",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers,
     },
@@ -57,10 +58,17 @@ export function createDeployment(token: string, payload: Record<string, string |
   });
 }
 
+export function createGithubDeployment(token: string, payload: Record<string, string | number | boolean>) {
+  return jsonRequest<Deployment>("/deploy/github", token, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function createDockerfileDeployment(token: string, formData: FormData) {
   const response = await fetch(`${apiBase}/deploy/dockerfile`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${token}`, "ngrok-skip-browser-warning": "true" },
     body: formData,
   });
 
@@ -120,7 +128,7 @@ export async function uploadContainerFile(token: string, id: number, path: strin
 
   const response = await fetch(`${apiBase}/deployment/${id}/file/upload`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${token}`, "ngrok-skip-browser-warning": "true" },
     body: formData,
   });
 
@@ -135,15 +143,28 @@ export function runDeploymentAction(token: string, id: number, action: Exclude<D
   return jsonRequest<Deployment>(`/${action}/${id}`, token, { method: "POST" });
 }
 
+export function redeployGithubDeployment(token: string, id: number) {
+  return jsonRequest<Deployment>(`/deployment/${id}/github/redeploy`, token, { method: "POST" });
+}
+
 export function deleteDeployment(token: string, id: number) {
   return jsonRequest<void>(`/deployment/${id}`, token, { method: "DELETE" });
 }
 
-export function loadBalancedDeploymentUrl(id: number, path = "") {
+export function loadBalancedDeploymentUrl(id: number, path = "", port?: number) {
   const routeUrl = new URL(apiBase);
   const normalizedPath = path ? `/${path.replace(/^\/+/, "")}` : "";
   routeUrl.pathname = `/deployment/${id}/route${normalizedPath}`;
+  if (port) {
+    routeUrl.searchParams.set("instance_port", String(port));
+  }
   return routeUrl.toString();
+}
+
+export function githubWebhookUrl(id: number, secret: string) {
+  const webhookUrl = new URL(apiBase);
+  webhookUrl.pathname = `/webhooks/github/${id}/${secret}`;
+  return webhookUrl.toString();
 }
 
 export function logsWebSocketUrl(token: string, id: number, instanceIndex = 1) {

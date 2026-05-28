@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { loadBalancedDeploymentUrl } from "@/lib/api";
+import { githubWebhookUrl, loadBalancedDeploymentUrl } from "@/lib/api";
 import { getErrorMessage } from "@/lib/errors";
 import { bytesToMb, formatRuntime, statusClass } from "@/lib/format";
 import type { DailyDeploymentStats, Deployment, DeploymentAction, FileEntry, InstanceStats, Stats } from "@/lib/types";
@@ -16,6 +16,7 @@ type Props = {
   selectDeployment: (id: number) => void;
   refreshDeployments: () => Promise<void>;
   runAction: (id: number, action: DeploymentAction) => Promise<void>;
+  redeployGithub: (id: number) => Promise<void>;
   actionId: number | null;
   refreshStats: () => Promise<void>;
   fetchLogs: () => Promise<void>;
@@ -60,6 +61,7 @@ export default function DashboardSection(props: Props) {
     selectedDeployment,
     selectDeployment,
     runAction,
+    redeployGithub,
     actionId,
     refreshStats,
     fetchLogs,
@@ -214,6 +216,9 @@ export default function DashboardSection(props: Props) {
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
+                  {selectedDeployment.source_type === "github" ? (
+                    <ActionButton label="Update From GitHub" disabled={actionId === selectedDeployment.id} onClick={() => redeployGithub(selectedDeployment.id)} />
+                  ) : null}
                   <ActionButton label="Restart" disabled={actionId === selectedDeployment.id} onClick={() => runAction(selectedDeployment.id, "restart")} />
                   <ActionButton label="Stop" disabled={actionId === selectedDeployment.id} onClick={() => runAction(selectedDeployment.id, "stop")} />
                   <button
@@ -232,6 +237,26 @@ export default function DashboardSection(props: Props) {
                 <DetailMetric label="Instances" value={`${selectedPorts.length} ${selectedDeployment.scale_mode === "auto" ? "auto" : "manual"}`} />
                 <DetailMetric label="Storage Cap" value={`${selectedDeployment.storage_limit_mb} MB`} />
               </div>
+
+              {selectedDeployment.source_type === "github" ? (
+                <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-xs">
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <DetailMetric label="GitHub Repo" value={selectedDeployment.github_repo_url || "Not linked"} />
+                    <DetailMetric label="Branch" value={selectedDeployment.github_branch || "main"} />
+                    <DetailMetric label="Base Path" value={selectedDeployment.github_context_path || "."} />
+                    <DetailMetric label="Deploy Mode" value={selectedDeployment.github_auto_deploy ? "Auto webhook" : "Manual update"} />
+                    <DetailMetric label="Last Commit" value={selectedDeployment.github_last_commit?.slice(0, 12) || "Pending"} />
+                  </div>
+                  {selectedDeployment.github_auto_deploy && selectedDeployment.github_webhook_secret ? (
+                    <div className="mt-3">
+                      <div className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">Webhook URL</div>
+                      <div className="mt-1 break-all rounded border border-zinc-200 bg-white p-2 font-mono text-[11px] text-zinc-600">
+                        {githubWebhookUrl(selectedDeployment.id, selectedDeployment.github_webhook_secret)}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
 
               {selectedDeployment.last_error && (
                 <div className="rounded-lg border border-rose-100 bg-rose-50 p-3 font-mono text-xs text-rose-700">
@@ -253,7 +278,7 @@ export default function DashboardSection(props: Props) {
                 {selectedPortLinks.map(({ port, label }) => (
                   <a
                     key={port}
-                    href={`http://localhost:${port}`}
+                    href={loadBalancedDeploymentUrl(selectedDeployment.id, "", port)}
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex h-8 items-center rounded-md border border-zinc-200 bg-white px-3 text-xs font-semibold text-zinc-700 hover:bg-zinc-50 transition"
@@ -529,76 +554,168 @@ export default function DashboardSection(props: Props) {
             </div>
           </div>
 
-          {/* Section: File Browser Tree & Live State Editor */}
-          <div className="rounded-xl border !border-orange-500 bg-white p-5 shadow-sm">
-            <div className="mb-4 border-b border-zinc-100 pb-3">
-              <h3 className="text-sm font-bold text-zinc-800">Container Storage Space Workspace File Explorer</h3>
-              <p className="text-[11px] text-zinc-400 mt-0.5">Direct system memory mapping workspace nodes</p>
-            </div>
+          <div className="flex flex-col rounded-2xl border border-zinc-800 bg-black shadow-2xl ring-1 ring-white/5 overflow-hidden">
             
-            <div className="grid gap-6 md:grid-cols-5">
-              {/* Directory Target Tree Column */}
-              <div className="md:col-span-2 space-y-2">
-                <label className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">Container Direct Route</label>
-                <div className="flex gap-2">
-                  <input
-                    value={filePath}
-                    onChange={(event) => setFilePath(event.target.value)}
-                    placeholder="/app"
-                    className="h-9 flex-1 rounded-md  px-3 font-mono text-xs bg-zinc-50 outline-none focus:border-cyan-600 focus:bg-white transition"
-                  />
-                  <button
-                    onClick={() => browseFiles()}
-                    disabled={toolBusy}
-                    className="h-9 rounded-md border border-zinc-200 bg-white px-3 text-xs font-bold text-zinc-700 hover:!bg-orange-500 disabled:opacity-50 transition"
-                  >
-                    Scan Directory
-                  </button>
-                </div>
-                <div className="h-64 overflow-auto rounded-lg border border-zinc-200 bg-zinc-50/50 p-1 divide-y divide-zinc-200 text-xs">
-                  {fileEntries.map((entry) => (
+            {/* Unified Workspace Header */}
+            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-zinc-800 bg-zinc-950/40 p-5">
+              <div>
+                <h3 className="text-xs font-bold uppercase tracking-widest text-orange-400">
+                  Workspace File Explorer
+                </h3>
+                <p className="mt-1 text-sm font-medium text-zinc-100">
+                  Container Storage Space &amp; Editor
+                </p>
+              </div>
+              
+              {/* Scope/Status Indicator */}
+              <div className="flex items-center gap-2 rounded-lg bg-zinc-950 px-3 py-1.5 border border-zinc-800">
+                <span className="relative flex h-2 w-2">
+                  <span className={`absolute inline-flex h-full w-full rounded-full opacity-75 ${toolBusy ? "animate-ping bg-amber-500" : "bg-orange-400"}`}></span>
+                  <span className={`relative inline-flex rounded-full h-2 w-2 ${toolBusy ? "bg-amber-600" : "bg-orange-500"}`}></span>
+                </span>
+                <span className="font-mono text-[11px] font-semibold text-zinc-300">
+                  {toolBusy ? "System Busy" : "File Tree Ready"}
+                </span>
+              </div>
+            </div>
+
+            {/* Sidebar Split Pane Layout */}
+            <div className="grid md:grid-cols-5 divide-y md:divide-y-0 md:divide-x divide-zinc-800">
+              
+              {/* Left Column: Modern IDE File Tree Sidebar */}
+              <div className="md:col-span-2 p-5 flex flex-col gap-4 bg-zinc-950/20">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">
+                    Directory Root Target
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      value={filePath}
+                      onChange={(event) => setFilePath(event.target.value)}
+                      placeholder="/app"
+                      className="h-9 flex-1 rounded-lg border border-zinc-800 bg-zinc-950 px-3 font-mono text-xs text-white outline-none transition-colors focus:border-orange-500"
+                    />
                     <button
-                      key={entry.path}
-                      onClick={() => (entry.kind === "directory" ? browseFiles(entry.path) : openFile(entry.path))}
-                      className="flex w-full items-center px-2.5 py-2 text-left font-mono hover:!bg-white rounded group text-zinc-600 transition"
+                      onClick={() => browseFiles()}
+                      disabled={toolBusy}
+                      className="h-9 rounded-lg border border-zinc-800 bg-zinc-900 px-3 text-xs font-semibold text-zinc-200 transition-all hover:bg-zinc-800 hover:text-white disabled:opacity-45"
                     >
-                      <span className={`mr-2 font-mono text-[9px] font-bold uppercase tracking-tight px-1 py-0.5 rounded ${entry.kind === "directory" ? "bg-amber-100 text-amber-800" : "bg-blue-100 text-blue-800"}`}>
-                        {entry.kind === "directory" ? "DIR" : "FILE"}
-                      </span>
-                      <span className="truncate group-hover:text-zinc-950">{entry.path}</span>
+                      Scan
                     </button>
-                  ))}
-                  {fileEntries.length === 0 && (
-                    <p className="p-4 text-xs text-zinc-400 italic text-center">Execute target mount route tracking scans to verify directory block structures.</p>
-                  )}
+                  </div>
+                </div>
+
+                {/* Hierarchical Tree Container */}
+                <div className="flex flex-col gap-1.5 flex-1">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                    Navigation File Tree
+                  </label>
+                  
+                  <div className="h-[320px] overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-950/60 p-2 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+                    <div className="flex flex-col gap-0.5 font-mono text-xs">
+                      
+                      {fileEntries.map((entry) => {
+                        const isDir = entry.kind === "directory";
+                        const isActive = editorPath === entry.path;
+                        
+                        // Dynamically calculates depth indent logic if nested structure is present
+                        const pathSegments = entry.path.replace(/^\/|\/$/g, "").split("/");
+                        const depth = Math.max(0, pathSegments.length - 1);
+                        const displayName = pathSegments[pathSegments.length - 1] || entry.path;
+
+                        return (
+                          <button
+                            key={entry.path}
+                            onClick={() => (isDir ? browseFiles(entry.path) : openFile(entry.path))}
+                            style={{ paddingLeft: `${(depth * 12) + 8}px` }}
+                            className={`group flex w-full items-center gap-2 rounded-md py-1.5 pr-2 text-left transition-all border border-transparent ${
+                              isActive 
+                                ? "bg-orange-950/40 text-orange-400 border-orange-500/20 font-medium" 
+                                : "text-zinc-400 hover:bg-zinc-900/60 hover:text-zinc-100"
+                            }`}
+                          >
+                            {/* Visual Structure Guide Connector Lines */}
+                            {depth > 0 && (
+                              <span className="text-zinc-800 font-normal tracking-tighter pointer-events-none -ml-1 mr-0.5">
+                                │
+                              </span>
+                            )}
+
+                            {/* Modern System File Tree Glyphs */}
+                            {isDir ? (
+                              <span className={`text-sm select-none ${isActive ? "text-amber-400" : "text-amber-600/80 group-hover:text-amber-500"}`}>
+                                📁
+                              </span>
+                            ) : (
+                              <span className={`text-sm select-none ${isActive ? "text-orange-400" : "text-zinc-600 group-hover:text-zinc-500"}`}>
+                                📄
+                              </span>
+                            )}
+
+                            {/* Clean Node Name Text */}
+                            <span className="truncate flex-1 tracking-wide">
+                              {displayName}
+                            </span>
+                          </button>
+                        );
+                      })}
+                      
+                      {fileEntries.length === 0 && (
+                        <div className="py-12 text-center">
+                          <span className="text-xl opacity-30 select-none">📭</span>
+                          <p className="mt-2 text-xs text-zinc-500 italic">
+                            No mount tree scanned yet.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              {/* Memory Data Buffer Editor Column */}
-              <div className="md:col-span-3 space-y-2">
-                <label className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">Active Node Modification Buffer</label>
-                <div className="flex gap-2">
-                  <input
-                    value={editorPath}
-                    onChange={(event) => setEditorPath(event.target.value)}
-                    placeholder="Specify storage mapping path destination"
-                    className="h-9 flex-1 rounded-md border border-zinc-200 bg-zinc-50 px-3 font-mono text-xs outline-none focus:border-cyan-600 focus:bg-white transition"
-                  />
-                  <button
-                    onClick={saveFile}
-                    disabled={toolBusy || !editorPath}
-                    className="h-9 rounded-md bg-cyan-700 px-4 text-xs font-bold  hover:!bg-white disabled:opacity-50 transition shadow-sm"
-                  >
-                    Commit Adjustments
-                  </button>
+              {/* Right Column: Integrated Code Workspace Editor View */}
+              <div className="md:col-span-3 p-5 flex flex-col gap-4 bg-zinc-950/10">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">
+                    Active Workspace Buffer File
+                  </label>
+                  <div className="flex gap-2">
+                    <div className="relative flex-1 flex items-center">
+                      <span className="absolute left-3 font-mono text-xs text-zinc-600 select-none">
+                        EDIT:
+                      </span>
+                      <input
+                        value={editorPath}
+                        onChange={(event) => setEditorPath(event.target.value)}
+                        placeholder="Select a node from navigation tree to edit"
+                        className="h-9 w-full rounded-lg border border-zinc-800 bg-zinc-950 pl-14 pr-3 font-mono text-xs text-zinc-200 outline-none transition-colors focus:border-orange-500"
+                      />
+                    </div>
+                    <button
+                      onClick={saveFile}
+                      disabled={toolBusy || !editorPath}
+                      className="h-9 rounded-lg border border-orange-500/30 bg-orange-950/40 px-4 text-xs font-bold text-orange-400 transition-all hover:bg-orange-950 hover:border-orange-500 disabled:opacity-30 disabled:pointer-events-none"
+                    >
+                      Commit
+                    </button>
+                  </div>
                 </div>
-                <textarea
-                  value={editorContent}
-                  onChange={(event) => setEditorContent(event.target.value)}
-                  placeholder="Pull internal elements into editor layout workspace to modify system variables live inside virtual architecture disk parameters."
-                  className="h-64 w-full rounded-lg border border-zinc-200 p-3 font-mono text-xs outline-none bg-zinc-50 text-zinc-800 focus:bg-white focus:border-cyan-600 transition"
-                />
+
+                {/* Textarea Code Area */}
+                <div className="relative flex-1 flex flex-col">
+                  <textarea
+                    value={editorContent}
+                    onChange={(event) => setEditorContent(event.target.value)}
+                    placeholder="// Select a configuration file or dataset from the file explorer tree sidebar navigation grid to display stream content buffer variables live inside this block structure environment matrix layout framework."
+                    className="h-[320px] w-full rounded-xl border border-zinc-800 bg-zinc-950 p-4 font-mono text-xs leading-6 text-zinc-200 outline-none transition-all focus:border-zinc-700 resize-none [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden shadow-inner"
+                  />
+                  {/* Subtle Indicator Graphic Badge Overlay inside editor box */}
+                  <div className="absolute bottom-3 right-4 pointer-events-none text-[9px] font-mono text-zinc-600 uppercase font-bold tracking-widest bg-zinc-900/80 px-1.5 py-0.5 rounded border border-zinc-800/60">
+                    System Sync Buffer
+                  </div>
+                </div>
               </div>
+              
             </div>
           </div>
 

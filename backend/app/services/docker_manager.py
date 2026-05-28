@@ -48,6 +48,28 @@ class DockerManager:
         except (ImageNotFound, APIError, DockerException) as exc:
             raise DockerManagerError(f"Failed to pull image {image_name}: {exc}") from exc
 
+    async def build_image_from_path(self, *, path: Path, tag: str) -> None:
+        await self.ensure_network()
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    self.client.images.build,
+                    path=str(path),
+                    dockerfile="Dockerfile",
+                    tag=tag,
+                    rm=True,
+                    forcerm=True,
+                    pull=True,
+                    network_mode=settings.docker_build_network,
+                    labels={"managed-by": "server-rent-alpha"},
+                ),
+                timeout=settings.dockerfile_build_timeout_seconds,
+            )
+        except TimeoutError as exc:
+            raise DockerManagerError("GitHub repository build timed out") from exc
+        except (APIError, DockerException, OSError) as exc:
+            raise DockerManagerError(f"Failed to build GitHub repository image: {exc}") from exc
+
     async def build_image_from_dockerfile(
         self,
         *,

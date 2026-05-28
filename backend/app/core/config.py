@@ -9,11 +9,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    database_url: str = "postgresql+asyncpg://paas:paas@127.0.0.1:5433/paas"
+    database_url: str
     jwt_secret: str = Field(default="change-me-in-production", min_length=16)
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 1440
-    frontend_origin: str = "http://localhost:3000"
+    frontend_origin: str
+    frontend_origins: str | None = None
+    public_api_base_url: str | None = None
+    deployment_url_template: str | None = None
 
     docker_network: str = "paas_isolated"
     docker_internal_port: int = 8080

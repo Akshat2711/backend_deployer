@@ -26,6 +26,42 @@ class DeploymentCreate(BaseModel):
         return value
 
 
+class GithubDeploymentCreate(DeploymentCreate):
+    image_name: str = "github-repo"
+    github_repo_url: str = Field(min_length=1, max_length=512)
+    github_branch: str = Field(default="main", min_length=1, max_length=128)
+    github_context_path: str = Field(default=".", min_length=1, max_length=256)
+    github_auto_deploy: bool = False
+
+    @field_validator("github_repo_url")
+    @classmethod
+    def validate_github_repo_url(cls, value: str) -> str:
+        if not value.startswith("https://github.com/"):
+            raise ValueError("repo URL must be an https://github.com/... URL")
+        if any(token in value for token in [";", "&", "|", "$", "`", " "]):
+            raise ValueError("repo URL contains invalid characters")
+        return value
+
+    @field_validator("github_branch")
+    @classmethod
+    def validate_github_branch(cls, value: str) -> str:
+        if any(token in value for token in [";", "&", "|", "$", "`", " ", "..", "~", "^", ":"]):
+            raise ValueError("branch contains invalid characters")
+        return value
+
+    @field_validator("github_context_path")
+    @classmethod
+    def validate_github_context_path(cls, value: str) -> str:
+        normalized = value.strip().strip("/")
+        if normalized in {"", "."}:
+            return "."
+        if normalized.startswith(".") or ".." in normalized.split("/"):
+            raise ValueError("context path must be a safe relative path")
+        if any(token in normalized for token in ["\\", ";", "&", "|", "$", "`", "~", ":"]):
+            raise ValueError("context path contains invalid characters")
+        return normalized
+
+
 class DeploymentResponse(BaseModel):
     id: int
     user_id: int
@@ -43,6 +79,13 @@ class DeploymentResponse(BaseModel):
     assigned_ports: list[int] | None
     internal_port: int
     read_only: bool
+    source_type: str
+    github_repo_url: str | None
+    github_branch: str | None
+    github_context_path: str | None
+    github_auto_deploy: bool
+    github_webhook_secret: str | None
+    github_last_commit: str | None
     restart_count: int
     last_error: str | None
     created_at: datetime

@@ -21,6 +21,13 @@ export type Deployment = {
   assigned_ports: number[] | null;
   internal_port: number;
   read_only: boolean;
+  source_type: string;
+  github_repo_url: string | null;
+  github_branch: string | null;
+  github_context_path: string | null;
+  github_auto_deploy: boolean;
+  github_webhook_secret: string | null;
+  github_last_commit: string | null;
   restart_count: number;
   last_error: string | null;
   created_at: string;
@@ -97,8 +104,12 @@ export type FileRead = {
 };
 
 export type DeployFormState = {
-  source: "image" | "dockerfile";
+  source: "image" | "dockerfile" | "github";
   image_name: string;
+  github_repo_url: string;
+  github_branch: string;
+  github_context_path: string;
+  github_auto_deploy: boolean;
   internal_port: string;
   cpu_limit: string;
   ram_limit: string;

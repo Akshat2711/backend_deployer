@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import re
+import secrets
+import shutil
+import tempfile
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from urllib.parse import urlparse
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
@@ -12,7 +17,7 @@ from app.core.config import settings
 from app.models.deployment import Deployment
 from app.models.deployment_daily_stat import DeploymentDailyStat
 from app.models.usage_stats import UsageStats
-from app.schemas.deployment import DeploymentCreate
+from app.schemas.deployment import DeploymentCreate, GithubDeploymentCreate
 from app.services.docker_manager import DockerManager, DockerManagerError
 from app.utils.ports import random_available_port
 
@@ -38,10 +43,173 @@ SAFE_DOCKERFILE_INSTRUCTIONS = {
 }
 
 
+class GithubRepositoryError(RuntimeError):
+    pass
+
+
 class DeploymentService:
     def __init__(self, docker_manager: DockerManager) -> None:
         self.docker = docker_manager
         self._capacity_lock = asyncio.Lock()
+
+    async def create_github_deployment(self, db: AsyncSession, *, user_id: int, payload: GithubDeploymentCreate) -> Deployment:
+        self.validate_github_repo_url(payload.github_repo_url)
+        async with self._capacity_lock:
+            await self.ensure_pool_capacity(db, payload=payload)
+            assigned_port = random_available_port(settings.docker_host_port_start, settings.docker_host_port_end)
+            read_only = settings.docker_read_only_default if payload.read_only is None else payload.read_only
+            image_tag = f"server-rent-alpha/user-{user_id}-deployment-pending"
+            deployment = Deployment(
+                user_id=user_id,
+                image_name=image_tag,
+                status="building",
+                cpu_limit=payload.cpu_limit,
+                ram_limit=payload.ram_limit,
+                storage_limit_mb=payload.storage_limit_mb,
+                pids_limit=payload.pids_limit,
+                scale_mode=payload.scale_mode,
+                desired_instances=payload.desired_instances,
+                assigned_port=assigned_port,
+                internal_port=payload.internal_port,
+                read_only=read_only,
+                source_type="github",
+                github_repo_url=payload.github_repo_url,
+                github_branch=payload.github_branch,
+                github_context_path=payload.github_context_path,
+                github_auto_deploy=payload.github_auto_deploy,
+                github_webhook_secret=secrets.token_urlsafe(24),
+            )
+            db.add(deployment)
+            await db.commit()
+            await db.refresh(deployment)
+
+        image_tag = f"server-rent-alpha/user-{user_id}-deployment-{deployment.id}:latest"
+        deployment.image_name = image_tag
+        await db.commit()
+
+        try:
+            await self.rebuild_github_deployment(db, deployment=deployment, image_tag=image_tag)
+        except (DockerManagerError, RuntimeError) as exc:
+            deployment.status = "failed"
+            deployment.last_error = str(exc)
+            await db.commit()
+            raise
+
+        await db.refresh(deployment)
+        return deployment
+
+    async def rebuild_github_deployment(self, db: AsyncSession, *, deployment: Deployment, image_tag: str | None = None) -> Deployment:
+        if deployment.source_type != "github" or not deployment.github_repo_url:
+            raise RuntimeError("Deployment is not linked to a GitHub repository")
+
+        image_name = image_tag or deployment.image_name
+        deployment.status = "building"
+        deployment.last_error = None
+        await db.commit()
+
+        repo_dir, commit_sha = await self.clone_github_repo(
+            repo_url=deployment.github_repo_url,
+            branch=deployment.github_branch or "main",
+        )
+        try:
+            context_path = self.resolve_github_context_path(repo_dir=Path(repo_dir), context_path=deployment.github_context_path or ".")
+            if not Path(context_path, "Dockerfile").is_file():
+                display_path = deployment.github_context_path or "."
+                raise RuntimeError(f"GitHub repository must contain a Dockerfile at context path {display_path}")
+            await self.docker.build_image_from_path(path=context_path, tag=image_name)
+        finally:
+            shutil.rmtree(repo_dir, ignore_errors=True)
+
+        old_container_ids = [cid for cid in (deployment.container_ids or ([deployment.container_id] if deployment.container_id else [])) if cid]
+        for container_id in old_container_ids:
+            await self.docker.remove_container(container_id, force=True)
+
+        deployment.container_id = None
+        deployment.container_ids = []
+        deployment.assigned_ports = []
+        deployment.status = "creating"
+        await db.commit()
+
+        await self.create_runtime_containers(db, deployment=deployment)
+        deployment.github_last_commit = commit_sha
+        deployment.status = "running"
+        deployment.last_error = None
+        await db.commit()
+        await db.refresh(deployment)
+        return deployment
+
+    async def create_runtime_containers(self, db: AsyncSession, *, deployment: Deployment) -> None:
+        instance_count = 1 if deployment.scale_mode == "auto" else deployment.desired_instances
+        container_ids: list[str] = []
+        assigned_ports: list[int] = []
+
+        try:
+            for instance_index in range(instance_count):
+                host_port = random_available_port(settings.docker_host_port_start, settings.docker_host_port_end)
+                assigned_ports.append(host_port)
+                container_id = await self.docker.create_container(
+                    image_name=deployment.image_name,
+                    host_port=host_port,
+                    internal_port=deployment.internal_port,
+                    cpu_limit=deployment.cpu_limit,
+                    ram_limit_mb=deployment.ram_limit,
+                    storage_limit_mb=deployment.storage_limit_mb,
+                    pids_limit=deployment.pids_limit,
+                    read_only=deployment.read_only,
+                    name=f"paas-{deployment.id}-{instance_index + 1}",
+                )
+                container_ids.append(container_id)
+
+            deployment.container_id = container_ids[0]
+            deployment.container_ids = container_ids
+            deployment.assigned_ports = assigned_ports
+            deployment.assigned_port = assigned_ports[0]
+            deployment.status = "starting"
+            await db.commit()
+
+            for container_id in container_ids:
+                await self.docker.start_container(container_id)
+            await self.ensure_started_instances_running(container_ids)
+        except (DockerManagerError, RuntimeError):
+            for container_id in container_ids:
+                await self.docker.remove_container(container_id, force=True)
+            raise
+
+    async def clone_github_repo(self, *, repo_url: str, branch: str) -> tuple[str, str]:
+        target = tempfile.mkdtemp(prefix="server-rent-github-")
+        try:
+            clone = await asyncio.create_subprocess_exec(
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                "--branch",
+                branch,
+                repo_url,
+                target,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await clone.communicate()
+            if clone.returncode != 0:
+                raise GithubRepositoryError(stderr.decode("utf-8", errors="replace").strip() or "Git clone failed")
+
+            rev_parse = await asyncio.create_subprocess_exec(
+                "git",
+                "-C",
+                target,
+                "rev-parse",
+                "HEAD",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await rev_parse.communicate()
+            if rev_parse.returncode != 0:
+                raise GithubRepositoryError(stderr.decode("utf-8", errors="replace").strip() or "Could not read commit SHA")
+            return target, stdout.decode("utf-8", errors="replace").strip()
+        except Exception:
+            shutil.rmtree(target, ignore_errors=True)
+            raise
 
     async def create_deployment(self, db: AsyncSession, *, user_id: int, payload: DeploymentCreate) -> Deployment:
         async with self._capacity_lock:
@@ -61,6 +229,7 @@ class DeploymentService:
                 assigned_port=assigned_port,
                 internal_port=payload.internal_port,
                 read_only=read_only,
+                source_type="image",
             )
             db.add(deployment)
             await db.commit()
@@ -145,6 +314,7 @@ class DeploymentService:
                 assigned_port=assigned_port,
                 internal_port=payload.internal_port,
                 read_only=read_only,
+                source_type="dockerfile",
             )
             db.add(deployment)
             await db.commit()
@@ -216,7 +386,8 @@ class DeploymentService:
     async def get_public_deployment(self, db: AsyncSession, *, deployment_id: int) -> Deployment | None:
         result = await db.execute(select(Deployment).where(Deployment.id == deployment_id))
         return result.scalar_one_or_none()
-
+    
+#descides which port to route to based on container stats, returns first assigned port if no running instances are found
     async def choose_route_port(self, deployment: Deployment) -> int:
         container_ids = [cid for cid in (deployment.container_ids or ([deployment.container_id] if deployment.container_id else [])) if cid]
         assigned_ports = [int(port) for port in (deployment.assigned_ports or ([deployment.assigned_port] if deployment.assigned_port else []))]
@@ -239,9 +410,11 @@ class DeploymentService:
             scored_ports.append((score, port))
 
         if scored_ports:
+            print("Choosing route port:", min(scored_ports, key=lambda item: item[0])[1])
             return min(scored_ports, key=lambda item: item[0])[1]
-
+        
         return assigned_ports[0]
+    
 
     async def resource_pool(self, db: AsyncSession) -> dict[str, float | int]:
         result = await db.execute(
@@ -551,3 +724,28 @@ class DeploymentService:
 
         if "FROM" not in instructions:
             raise RuntimeError("Dockerfile must include a FROM instruction")
+
+    def validate_github_repo_url(self, repo_url: str) -> None:
+        parsed = urlparse(repo_url)
+        if parsed.scheme != "https" or parsed.netloc.lower() != "github.com":
+            raise RuntimeError("Only https://github.com/... repository URLs are supported")
+        parts = [part for part in parsed.path.strip("/").split("/") if part]
+        if len(parts) < 2:
+            raise RuntimeError("GitHub repository URL must include owner and repo")
+        if any(part in {".", ".."} for part in parts[:2]):
+            raise RuntimeError("GitHub repository URL is invalid")
+
+    def resolve_github_context_path(self, *, repo_dir: Path, context_path: str) -> Path:
+        normalized = context_path.strip().strip("/")
+        if normalized in {"", "."}:
+            return repo_dir.resolve()
+        parts = normalized.split("/")
+        if normalized.startswith(".") or ".." in parts:
+            raise RuntimeError("GitHub context path must be a safe relative path")
+        target = (repo_dir / normalized).resolve()
+        root = repo_dir.resolve()
+        if target != root and root not in target.parents:
+            raise RuntimeError("GitHub context path escapes the repository")
+        if not target.is_dir():
+            raise RuntimeError(f"GitHub context path does not exist: {normalized}")
+        return target

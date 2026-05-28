@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 from typing import Literal
+from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, status
+from fastapi.responses import RedirectResponse, StreamingResponse
+import httpx
 import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,12 +26,15 @@ from app.schemas.deployment import (
     FileListResponse,
     FileReadResponse,
     FileWriteRequest,
+    GithubDeploymentCreate,
     InstanceLogResponse,
     ResourcePoolResponse,
 )
 from app.schemas.stats import DailyDeploymentStatsResponse, InstanceStatsResponse, StatsResponse
+from app.services.deployment_service import GithubRepositoryError
 from app.services.docker_manager import DockerManagerError
 from app.utils.container_paths import safe_workspace_path
+from app.utils.proxy import proxy_request
 
 router = APIRouter(tags=["deployments"])
 logger = structlog.get_logger()
@@ -48,6 +56,27 @@ def select_deployment_container(deployment: Deployment, instance_index: int) -> 
     if instance_index < 1 or instance_index > len(containers):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Instance not found")
     return containers[instance_index - 1]
+
+
+def deployment_target_url(request: Request, *, port: int, path: str, query: str) -> str:
+    target_path = f"/{path.lstrip('/')}" if path else "/"
+    target_query = f"?{query}" if query else ""
+    if settings.deployment_url_template:
+        return (
+            settings.deployment_url_template.replace("{port}", str(port))
+            .replace("{path}", target_path)
+            .replace("{query}", target_query)
+            .replace("{scheme}", request.url.scheme)
+            .replace("{host}", request.url.hostname or "")
+        )
+
+    public_base = settings.public_api_base_url
+    parsed_public = urlparse(public_base) if public_base else None
+    scheme = parsed_public.scheme if parsed_public and parsed_public.scheme else request.url.scheme
+    host = parsed_public.hostname if parsed_public and parsed_public.hostname else request.url.hostname
+    if not host:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Public host is not configured")
+    return f"{scheme}://{host}:{port}{target_path}{target_query}"
 
 
 @router.post("/deploy", response_model=DeploymentResponse, status_code=status.HTTP_201_CREATED)
@@ -136,6 +165,89 @@ async def deploy_dockerfile(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
+@router.post("/deploy/github", response_model=DeploymentResponse, status_code=status.HTTP_201_CREATED)
+async def deploy_github(
+    payload: GithubDeploymentCreate,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Deployment:
+    service = request.app.state.deployment_service
+    try:
+        return await service.create_github_deployment(db, user_id=current_user.id, payload=payload)
+    except GithubRepositoryError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except DockerManagerError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post("/deployment/{deployment_id}/github/redeploy", response_model=DeploymentResponse)
+async def redeploy_github(
+    deployment_id: int,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Deployment:
+    deployment = await request.app.state.deployment_service.get_owned_deployment(db, user_id=current_user.id, deployment_id=deployment_id)
+    if deployment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment not found")
+    try:
+        return await request.app.state.deployment_service.rebuild_github_deployment(db, deployment=deployment)
+    except GithubRepositoryError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except DockerManagerError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post("/webhooks/github/{deployment_id}/{webhook_secret}")
+async def github_webhook(
+    deployment_id: int,
+    webhook_secret: str,
+    request: Request,
+    github_event: str | None = Header(default=None, alias="X-GitHub-Event"),
+    github_signature: str | None = Header(default=None, alias="X-Hub-Signature-256"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    deployment = await request.app.state.deployment_service.get_public_deployment(db, deployment_id=deployment_id)
+    if deployment is None or deployment.source_type != "github" or deployment.github_webhook_secret != webhook_secret:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Webhook not found")
+    if not deployment.github_auto_deploy:
+        return {"status": "ignored", "detail": "Auto deploy is disabled for this deployment"}
+
+    body = await request.body()
+    if github_signature:
+        expected = "sha256=" + hmac.new(webhook_secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, github_signature):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook signature")
+    if github_event == "ping":
+        return {"status": "ready", "detail": "Webhook connected"}
+    if github_event and github_event != "push":
+        return {"status": "ignored", "detail": f"Ignored {github_event} event"}
+
+    payload = json.loads(body or b"{}")
+    pushed_ref = str(payload.get("ref", ""))
+    expected_ref = f"refs/heads/{deployment.github_branch or 'main'}"
+    if pushed_ref and pushed_ref != expected_ref:
+        return {"status": "ignored", "detail": f"Ignored {pushed_ref}; expected {expected_ref}"}
+
+    after_sha = str(payload.get("after", ""))
+    if after_sha and deployment.github_last_commit == after_sha:
+        return {"status": "ignored", "detail": "Deployment is already on this commit"}
+
+    try:
+        await request.app.state.deployment_service.rebuild_github_deployment(db, deployment=deployment)
+    except (GithubRepositoryError, DockerManagerError, RuntimeError) as exc:
+        deployment.status = "failed"
+        deployment.last_error = str(exc)
+        await db.commit()
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    return {"status": "deployed", "detail": deployment.github_last_commit or ""}
+
+
 @router.get("/resource-pool", response_model=ResourcePoolResponse)
 async def resource_pool(
     request: Request,
@@ -181,28 +293,49 @@ async def route_deployment_traffic(
     request: Request,
     path: str = "",
     db: AsyncSession = Depends(get_db),
-) -> RedirectResponse:
+) -> Response:
     deployment = await request.app.state.deployment_service.get_public_deployment(db, deployment_id=deployment_id)
     if deployment is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment not found")
-    try:
-        port = await request.app.state.deployment_service.choose_route_port(deployment)
-    except DockerManagerError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+    # Check if a specific instance port is requested via query param
+    requested_port = request.query_params.get("instance_port")
+    port = None
+    if requested_port:
+        try:
+            p_val = int(requested_port)
+            assigned_ports = [
+                int(p) for p in (deployment.assigned_ports or ([deployment.assigned_port] if deployment.assigned_port else [])) if p
+            ]
+            if p_val in assigned_ports:
+                port = p_val
+        except ValueError:
+            pass
+
+    if port is None:
+        try:
+            port = await request.app.state.deployment_service.choose_route_port(deployment)
+        except DockerManagerError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
     try:
         await request.app.state.deployment_service.record_route_request(db, deployment_id=deployment.id)
     except Exception as exc:
         logger.warning("deployment_route_request_count_failed", deployment_id=deployment.id, error=str(exc))
 
-    host = request.url.hostname or "localhost"
-    target_path = f"/{path.lstrip('/')}" if path else "/"
-    query = f"?{request.url.query}" if request.url.query else ""
-    return RedirectResponse(
-        url=f"{request.url.scheme}://{host}:{port}{target_path}{query}",
-        status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+    response = await proxy_request(
+        request,
+        port=port,
+        path=path,
+        deployment=deployment,
     )
+    # Set cookies so the 404 fallback proxy can capture absolute subpaths
+    response.set_cookie("deploy_id", str(deployment_id), path="/")
+    response.set_cookie("deploy_port", str(port), path="/")
+    return response
+
 
 
 @router.get("/deployment/{deployment_id}/daily-stats", response_model=list[DailyDeploymentStatsResponse])
