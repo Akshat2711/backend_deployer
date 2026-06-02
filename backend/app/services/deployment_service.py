@@ -54,15 +54,27 @@ class DeploymentService:
         self._capacity_lock = asyncio.Lock()
         self._stats_cache: dict[str, tuple[float, dict]] = {}
 
+    async def ensure_unique_custom_name(self, db: AsyncSession, user_id: int, custom_name: str) -> None:
+        result = await db.execute(
+            select(Deployment).where(
+                Deployment.user_id == user_id,
+                Deployment.custom_name == custom_name
+            )
+        )
+        if result.scalar_one_or_none() is not None:
+            raise RuntimeError(f"Deployment with name '{custom_name}' already exists in your account")
+
     async def create_github_deployment(self, db: AsyncSession, *, user_id: int, payload: GithubDeploymentCreate) -> Deployment:
         self.validate_github_repo_url(payload.github_repo_url)
         async with self._capacity_lock:
             await self.ensure_pool_capacity(db, payload=payload)
+            await self.ensure_unique_custom_name(db, user_id, payload.custom_name)
             assigned_port = random_available_port(settings.docker_host_port_start, settings.docker_host_port_end)
             read_only = settings.docker_read_only_default if payload.read_only is None else payload.read_only
             image_tag = f"server-rent-alpha/user-{user_id}-deployment-pending"
             deployment = Deployment(
                 user_id=user_id,
+                custom_name=payload.custom_name,
                 image_name=image_tag,
                 status="building",
                 cpu_limit=payload.cpu_limit,
@@ -216,10 +228,12 @@ class DeploymentService:
     async def create_deployment(self, db: AsyncSession, *, user_id: int, payload: DeploymentCreate) -> Deployment:
         async with self._capacity_lock:
             await self.ensure_pool_capacity(db, payload=payload)
+            await self.ensure_unique_custom_name(db, user_id, payload.custom_name)
             assigned_port = random_available_port(settings.docker_host_port_start, settings.docker_host_port_end)
             read_only = settings.docker_read_only_default if payload.read_only is None else payload.read_only
             deployment = Deployment(
                 user_id=user_id,
+                custom_name=payload.custom_name,
                 image_name=payload.image_name,
                 status="pulling",
                 cpu_limit=payload.cpu_limit,
@@ -300,11 +314,13 @@ class DeploymentService:
         self.validate_dockerfile(dockerfile)
         async with self._capacity_lock:
             await self.ensure_pool_capacity(db, payload=payload)
+            await self.ensure_unique_custom_name(db, user_id, payload.custom_name)
             assigned_port = random_available_port(settings.docker_host_port_start, settings.docker_host_port_end)
             read_only = settings.docker_read_only_default if payload.read_only is None else payload.read_only
             image_tag = f"server-rent-alpha/user-{user_id}-deployment-pending"
             deployment = Deployment(
                 user_id=user_id,
+                custom_name=payload.custom_name,
                 image_name=image_tag,
                 status="building",
                 cpu_limit=payload.cpu_limit,

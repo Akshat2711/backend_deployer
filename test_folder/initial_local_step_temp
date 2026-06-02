@@ -1,0 +1,3 @@
+akshat@akshat-Legion-Slim-5-16APH8:~$ docker start  backend-postgres-1
+backend-postgres-1
+akshat@akshat-Legion-Slim-5-16APH8:~$ docker exec -it backend-postgres-1 psql -U paas -d paas

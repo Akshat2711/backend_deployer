@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -11,8 +11,13 @@ from app.db.base import Base
 class Deployment(Base):
     __tablename__ = "deployments"
 
+    __table_args__ = (
+        UniqueConstraint("user_id", "custom_name", name="uq_user_custom_name"),
+    )
+
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    custom_name: Mapped[str | None] = mapped_column(String(63), nullable=True)
     image_name: Mapped[str] = mapped_column(String(512))
     container_id: Mapped[str | None] = mapped_column(String(128), unique=True, index=True, nullable=True)
     container_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)

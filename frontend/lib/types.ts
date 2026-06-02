@@ -7,6 +7,7 @@ export type User = {
 export type Deployment = {
   id: number;
   user_id: number;
+  custom_name: string | null;
   image_name: string;
   container_id: string | null;
   container_ids: string[] | null;
@@ -105,6 +106,7 @@ export type FileRead = {
 
 export type DeployFormState = {
   source: "image" | "dockerfile" | "github";
+  custom_name: string;
   image_name: string;
   github_repo_url: string;
   github_branch: string;

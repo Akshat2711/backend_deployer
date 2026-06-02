@@ -7,6 +7,13 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class DeploymentCreate(BaseModel):
+    custom_name: str = Field(
+        min_length=1,
+        max_length=63,
+        pattern=r"^[a-zA-Z0-9_-]+$",
+        examples=["my-web-app"],
+        description="A unique name for this deployment in your account"
+    )
     image_name: str = Field(min_length=1, max_length=512, examples=["nginx:alpine"])
     internal_port: int = Field(default=8080, ge=1, le=65535)
     cpu_limit: float = Field(default=0.25, ge=0.05, le=4.0)
@@ -65,6 +72,7 @@ class GithubDeploymentCreate(DeploymentCreate):
 class DeploymentResponse(BaseModel):
     id: int
     user_id: int
+    custom_name: str | None = None
     image_name: str
     container_id: str | None
     container_ids: list[str] | None

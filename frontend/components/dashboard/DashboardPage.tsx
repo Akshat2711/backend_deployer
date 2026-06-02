@@ -36,6 +36,7 @@ import Navbar from "@/components/global_ui/Navbar";
 
 const initialDeployForm: DeployFormState = {
   source: "image",
+  custom_name: "",
   image_name: "nginx:alpine",
   github_repo_url: "",
   github_branch: "main",
@@ -240,6 +241,7 @@ export default function DashboardRoute() {
     setMessage(deployForm.source === "image" ? "Creating deployment. Pulling images can take a moment." : "Building deployment image. This can take a moment.");
 
     const payload: Record<string, string | number | boolean> = {
+      custom_name: deployForm.custom_name,
       image_name: deployForm.image_name,
       github_repo_url: deployForm.github_repo_url,
       github_branch: deployForm.github_branch,
@@ -277,6 +279,7 @@ export default function DashboardRoute() {
             "build-context.tar",
           );
         }
+        formData.append("custom_name", deployForm.custom_name);
         formData.append("internal_port", deployForm.internal_port);
         formData.append("cpu_limit", deployForm.cpu_limit);
         formData.append("ram_limit", deployForm.ram_limit);
@@ -551,6 +554,19 @@ export default function DashboardRoute() {
         </div>
 
         <form onSubmit={handleDeploy} className="mt-6 space-y-5 overflow-y-auto h-[calc(100vh-120px)] pr-1">
+          <label className="block text-xs font-semibold tracking-wide text-zinc-600 uppercase">
+            Custom / Server Name
+            <input
+              required
+              pattern="^[a-zA-Z0-9_-]+$"
+              title="Only letters, numbers, dashes, and underscores are allowed"
+              value={deployForm.custom_name}
+              onChange={(event) => setDeployForm({ ...deployForm, custom_name: event.target.value })}
+              className="mt-2 h-10 w-full rounded-md border border-zinc-200 bg-zinc-50 px-3 font-mono text-sm outline-none focus:border-cyan-600 focus:bg-white transition"
+              placeholder="my-cool-server"
+            />
+          </label>
+
           <div className="flex rounded-lg bg-zinc-100 p-1">
             {(["image", "dockerfile", "github"] as const).map((source) => (
               <button

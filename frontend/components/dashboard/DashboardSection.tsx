@@ -159,7 +159,7 @@ export default function DashboardSection(props: Props) {
             <thead className="bg-zinc-50 font-bold uppercase tracking-wider text-zinc-500 border-b border-zinc-100">
               <tr>
                 <th className="px-5 py-3.5">ID</th>
-                <th className="px-5 py-3.5">Target Image</th>
+                <th className="px-5 py-3.5">Custom Name / Image</th>
                 <th className="px-5 py-3.5">Node Status</th>
                 <th className="px-5 py-3.5">Routing Ports</th>
                 <th className="px-5 py-3.5">Resource Caps</th>
@@ -174,7 +174,12 @@ export default function DashboardSection(props: Props) {
                   className={`cursor-pointer transition hover:bg-zinc-50/80 ${selectedDeployment?.id === deployment.id ? "!bg-orange-500" : ""}`}
                 >
                   <td className="px-5 py-4 font-bold text-zinc-900">#{deployment.id}</td>
-                  <td className="px-5 py-4 font-mono text-zinc-600">{deployment.image_name}</td>
+                  <td className="px-5 py-4">
+                    <div className="font-semibold text-zinc-900">{deployment.custom_name || "—"}</div>
+                    <div className="font-mono text-[10px] text-zinc-500 mt-0.5 truncate max-w-[200px]" title={deployment.image_name}>
+                      {deployment.image_name}
+                    </div>
+                  </td>
                   <td className="px-5 py-4">
                     <span className={`inline-flex rounded-md border px-2 py-0.5 text-[10px] font-bold uppercase tracking-tight ${statusClass(deployment.status)}`}>
                       {deployment.status}
@@ -210,7 +215,9 @@ export default function DashboardSection(props: Props) {
             <div className="lg:col-span-2 rounded-xl border !border-orange-500 bg-white p-5 shadow-sm space-y-5">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
-                  <h2 className="text-base font-bold text-zinc-900">Pod Node Identity #{selectedDeployment.id}</h2>
+                  <h2 className="text-base font-bold text-zinc-900">
+                    {selectedDeployment.custom_name ? `${selectedDeployment.custom_name} (Node #${selectedDeployment.id})` : `Pod Node Identity #${selectedDeployment.id}`}
+                  </h2>
                   <p className="mt-1 break-all font-mono text-xs text-zinc-400">
                     {(selectedDeployment.container_ids?.length ? selectedDeployment.container_ids : [selectedDeployment.container_id]).filter(Boolean).join(" / ") || "No virtual hash identifier generated"}
                   </p>

@@ -99,6 +99,7 @@ async def deploy(
 async def deploy_dockerfile(
     request: Request,
     dockerfile: UploadFile = File(...),
+    custom_name: str = Form(..., min_length=1, max_length=63, pattern=r"^[a-zA-Z0-9_-]+$"),
     context_archive: UploadFile | None = File(default=None),
     internal_port: int = Form(default=8080, ge=1, le=65535),
     cpu_limit: float = Form(default=0.25, ge=0.05, le=4.0),
@@ -138,6 +139,7 @@ async def deploy_dockerfile(
             )
 
     payload = DeploymentCreate(
+        custom_name=custom_name,
         image_name="dockerfile-upload",
         internal_port=internal_port,
         cpu_limit=cpu_limit,
